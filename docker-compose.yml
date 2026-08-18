@@ -1,0 +1,61 @@
+name: modidx
+
+services:
+  pg:
+    image: postgres:16-alpine
+    container_name: modidx-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in .env}
+      POSTGRES_DB: modidx
+    # Одноразові БД прогонів: довговічність не потрібна, швидкість потрібна.
+    # НЕ використовувати ці налаштування для БД, дані якої шкода втратити.
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c shared_buffers=1GB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+      -c max_connections=60
+      -c checkpoint_timeout=30min
+      -c max_wal_size=4GB
+      -c autovacuum_naptime=30s
+      -c log_min_duration_statement=5000
+    volumes:
+      - ./var/pgdata:/var/lib/postgresql/data
+    # тільки для локального оркестратора, зовні порт не відкритий
+    ports: ["127.0.0.1:5432:5432"]
+    networks: [modidx]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d modidx"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: modidx-caddy
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./var/site:/srv/site:ro
+      - ./var/caddy/data:/data
+      - ./var/caddy/config:/config
+      - ./var/caddy/logs:/var/log/caddy
+    networks: [modidx]
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+networks:
+  modidx:
+    name: modidx

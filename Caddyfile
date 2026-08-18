@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Апекс allservices.one — новий проєкт. Наявний ресурс переїжджає на субдомен.
+#
+# ПЕРЕД ЗАПУСКОМ:
+#  1. Перевірити AAAA. Зараз AAAA апексу вказує в мережу OVH, а A — на 65.21.189.197.
+#     Якщо IPv6 веде на інший хост, Let's Encrypt піде саме туди і сертификат не видасть.
+#     Або видалити AAAA, або переставити на IPv6 цього сервера.
+#  2. Звільнити 80/443: наявний веб-сервер перевести на 127.0.0.1:8080.
+#  3. Додати A (і AAAA) для субдомену наявного ресурсу на цей же сервер.
+#  4. caddy validate --config /etc/caddy/Caddyfile   перед підняттям.
+#
+# Поки експериментуєте — розкоментуйте staging, щоб не спалити ліміт сертификатів
+# Let's Encrypt (5 невдач на домен за годину):
+# {
+# 	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+# }
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── НОВИЙ ПРОЄКТ на апексі ───────────────────────────────────────────────────
+allservices.one, www.allservices.one {
+	root * /srv/site
+	encode zstd gzip
+
+	# Старі шляхи наявного ресурсу → 301 на субдомен.
+	# ЗАМІНИТИ на реальні префікси старого сайту, інакше зовнішні посилання
+	# й інтеграції поламаються. Дізнатися їх можна з логів старого сервера
+	# або з його конфігу.
+	# redir /app/* https://app.allservices.one{uri} permanent
+	# redir /api/* https://app.allservices.one{uri} permanent
+	# redir /login https://app.allservices.one{uri} permanent
+
+	file_server
+
+	@data path /data/* /llms.txt /modules.json
+	header @data Cache-Control "public, max-age=3600"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format json
+	}
+
+	handle_errors {
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}
+
+# ── НАЯВНИЙ РЕСУРС, переїхав на субдомен ─────────────────────────────────────
+# Замінити app. на те імʼя, яке вирішите. Старий веб-сервер має слухати
+# 127.0.0.1:8080 (не 0.0.0.0 — щоб не був доступний в обхід Caddy).
+app.allservices.one {
+	reverse_proxy 127.0.0.1:8080 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+	encode zstd gzip
+	log {
+		output file /var/log/caddy/app-access.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		format json
+	}
+}
+
+# ── Локальна перевірка без DNS і без сертификата ─────────────────────────────
+# Розкоментувати, щоб глянути сайт по http://IP:8081/ до перемикання доменів.
+# :8081 {
+# 	root * /srv/site
+# 	file_server
+# }

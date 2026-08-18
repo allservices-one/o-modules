@@ -1,0 +1,15 @@
+[Unit]
+Description=Module Health Index — денний зріз гілок і модулів OCA
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+Environment=HARVEST_SERIES=16.0 17.0 18.0 19.0 20.0
+ExecStart=/usr/bin/python3 /srv/modidx/indexer/harvest.py
+ExecStartPost=/usr/bin/python3 /srv/modidx/indexer/enqueue.py
+ExecStartPost=/bin/bash /srv/modidx/bin/sync_repos.sh
+MemoryMax=1G
+StandardOutput=append:/srv/modidx/var/logs/harvest.log
+StandardError=append:/srv/modidx/var/logs/harvest.log

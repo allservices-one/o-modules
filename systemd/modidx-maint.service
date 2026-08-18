@@ -1,0 +1,11 @@
+[Unit]
+Description=Module Health Index — нічне обслуговування (бекап, прибирання, звіт)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+ExecStart=/bin/bash /srv/modidx/bin/maint.sh
+MemoryMax=500M
+StandardOutput=append:/srv/modidx/var/logs/maint.log
+StandardError=append:/srv/modidx/var/logs/maint.log

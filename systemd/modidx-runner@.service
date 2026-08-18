@@ -1,0 +1,25 @@
+[Unit]
+Description=Module Health Index — воркер прогонів %i
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+Environment=SERIES=18.0 19.0
+# BATCH=8 для першого масового проходу, BATCH=1 для точних перевірок
+Environment=BATCH=8
+Environment=RUN_MEM=2g
+Environment=RUN_TIMEOUT=420
+ExecStart=/usr/bin/python3 /srv/modidx/indexer/runner.py
+Restart=always
+RestartSec=15
+# межа для самого оркестратора, не для контейнерів Odoo
+MemoryMax=400M
+Nice=5
+StandardOutput=append:/srv/modidx/var/logs/runner-%i.log
+StandardError=append:/srv/modidx/var/logs/runner-%i.log
+
+[Install]
+WantedBy=multi-user.target

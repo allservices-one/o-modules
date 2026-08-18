@@ -1,0 +1,13 @@
+[Unit]
+Description=Module Health Index — генерація статики
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+Environment=SITE_BASE=https://allservices.one
+ExecStart=/usr/bin/python3 /srv/modidx/indexer/export.py
+MemoryMax=700M
+Nice=10
+StandardOutput=append:/srv/modidx/var/logs/export.log
+StandardError=append:/srv/modidx/var/logs/export.log

@@ -1,0 +1,9 @@
+[Unit]
+Description=Перегенерація сайту щогодини (у вересні — кожні 15 хв)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

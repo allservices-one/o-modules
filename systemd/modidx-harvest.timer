@@ -1,0 +1,10 @@
+[Unit]
+Description=Зріз OCA щодня о 03:20 (і одразу після перезапуску, якщо пропустили)
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target
