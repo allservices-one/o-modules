@@ -7,23 +7,28 @@
 
 ## ЕТАП A. Поставити Claude Code на сервер (30–40 хв)
 
-### 1. Доставити комплект
-На вашому Mac, у теці зі скачаним архівом:
+### 1. Прибрати сміття після перенесення і запушити з Mac
 ```bash
-scp modidx-kit-v3.zip root@65.21.189.197:/tmp/
+cd /Users/serhii/Dev/modules
+bash cleanup-after-transfer.sh          # обовʼязково перед git: прибирає .git/*.lock
+git add -A && git commit -m "init"      # якщо є незакомічене
+git remote add origin https://github.com/deasonsv/modules.git
+git push -u origin main
 ```
-Якщо користувач не root — підставте свій і далі використовуйте `sudo`.
+Перед пушем перевірити, що секретів немає:
+```bash
+git ls-files | grep -E '^\.env|^var/|pf\.txt' && echo "СТОП" || echo "чисто"
+```
 
-### 2. Розпакувати на сервері
+### 2. Клон на сервер
 ```bash
 ssh root@65.21.189.197
-apt-get update && apt-get install -y unzip
-unzip -q /tmp/modidx-kit-v3.zip -d /tmp/kitsrc
-mkdir -p /srv/modidx && cp -a /tmp/kitsrc/kit/. /srv/modidx/
-rm -rf /tmp/kitsrc /tmp/modidx-kit-v3.zip
+apt-get update && apt-get install -y git
+git clone https://github.com/deasonsv/modules.git /srv/modidx
 cd /srv/modidx && chmod +x bin/*.sh && ls -1
 ```
-Очікувано видно: `CLAUDE.md`, `STEPS.md`, `PLAN.md`, `README.md`, `bin/`, `indexer/`, `systemd/`, `data/`.
+Якщо репозиторій приватний — deploy key, команди в `GIT.md`.
+Далі всі правки з сервера приходять до вас через `git pull`. Деталі — `GIT.md`.
 
 ### 3. Node 22 + Claude Code
 ```bash
