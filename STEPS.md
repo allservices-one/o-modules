@@ -12,7 +12,7 @@
 cd /Users/serhii/Dev/modules
 bash cleanup-after-transfer.sh          # обовʼязково перед git: прибирає .git/*.lock
 git add -A && git commit -m "init"      # якщо є незакомічене
-git remote add origin https://github.com/deasonsv/modules.git
+git remote add origin https://github.com/allservices-one/o-modules.git
 git push -u origin main
 ```
 Перед пушем перевірити, що секретів немає:
@@ -24,11 +24,12 @@ git ls-files | grep -E '^\.env|^var/|pf\.txt' && echo "СТОП" || echo "чис
 ```bash
 ssh root@65.21.189.197
 apt-get update && apt-get install -y git
-git clone https://github.com/deasonsv/modules.git /srv/modidx
+git clone https://github.com/allservices-one/o-modules.git /srv/modidx
 cd /srv/modidx && chmod +x bin/*.sh && ls -1
 ```
-Якщо репозиторій приватний — deploy key, команди в `GIT.md`.
-Далі всі правки з сервера приходять до вас через `git pull`. Деталі — `GIT.md`.
+Репозиторій публічний, тому клон анонімний. Але щоб сервер міг **пушити** свої правки,
+потрібен deploy key з write access — процедура в `GIT.md`, крок 4.
+Далі всі правки з сервера приходять до вас через `git pull`.
 
 ### 3. Node 22 + Claude Code
 ```bash

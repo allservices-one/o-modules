@@ -66,7 +66,7 @@ RAM: ОС+Docker 0.6 + Postgres 1.5 + 2×2.0 Odoo-раннери + 0.5 інше 
 
 ## Git-потік
 
-Репозиторій: **https://github.com/deasonsv/modules** (клонується в `/srv/modidx`).
+Репозиторій: **https://github.com/allservices-one/o-modules** (клонується в `/srv/modidx`).
 Робоче правило: **сервер комітить свої правки, власник пулить у себе на Mac.**
 Перед роботою — `git pull --rebase`; після робочих правок — коміт із осмисленим
 повідомленням і `git push`. Деталі й deploy key — у `GIT.md`.
