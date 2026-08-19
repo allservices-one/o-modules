@@ -47,7 +47,23 @@ WARN_PATTERNS = [
     (r"WARNING .*not found in|WARNING .*invalid", "Попередження при завантаженні"),
 ]
 
-OK_MARK = re.compile(r"Modules loaded\.|odoo\.modules\.loading: (\d+) modules loaded")
+# Рядки, які описують НАШ харнес або рендер README, а не результат install.
+# Без цього фільтра WARN_PATTERNS ловить наші ж попередження і кожен модуль
+# отримує warn замість ok. Перевірено 19.08.2026 на odoo:19.0: у чистому
+# успішному прогоні весь лог — це рівно ці рядки.
+#   odoo.tools.config — наші прапорці й addons-path ('/mnt/extra-addons' з образу,
+#                       '--without-demo=all' застарів у 19.0)
+#   <string>:N:       — docutils при рендері опису модуля
+NOISE = re.compile(r"odoo\.tools\.config|^<string>:\d+:")
+
+# Модуль не знайдено в addons-path — Odoo друкує це і виходить з кодом 0.
+# Тобто install НЕ відбувався, а зовні виглядає як успіх. Це збій харнесу,
+# не властивість модуля, тому статус env і в несумісність НЕ зараховується.
+IGNORED = re.compile(r"invalid module names, ignored:\s*(.+)")
+
+
+def _denoise(log: str) -> str:
+    return "\n".join(l for l in log.splitlines() if not NOISE.search(l))
 
 
 def classify(log: str, returncode: int, timed_out: bool = False):
@@ -60,6 +76,13 @@ def classify(log: str, returncode: int, timed_out: bool = False):
         return "timeout", "timeout", "Прогін перевищив ліміт часу"
 
     text = log[-200_000:] if len(log) > 200_000 else log
+    text = _denoise(text)
+
+    # Перевіряємо ДО коду виходу: тут rc=0 не означає успіху.
+    m = IGNORED.search(text)
+    if m:
+        return ("env", "env_module_not_found",
+                f"Модуль не знайдено в addons-path: {m.group(1).strip()[:160]}")
 
     if returncode == 0:
         for pat, msg in WARN_PATTERNS:

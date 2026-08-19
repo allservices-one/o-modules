@@ -18,6 +18,9 @@ TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "420"))
 MEM = os.environ.get("RUN_MEM", "2g")
 PGPASS = _password()
 IDLE_SLEEP = int(os.environ.get("IDLE_SLEEP", "30"))
+# MAX_JOBS>0 — обробити стільку задач і вийти. Для ручної перевірки
+# (STEPS, «один прогін вручну»); у systemd не задається, там цикл нескінченний.
+MAX_JOBS = int(os.environ.get("MAX_JOBS", "0"))
 
 
 def tmpl(series):
@@ -34,12 +37,21 @@ def psql(sql, db="postgres"):
 def run_install(series, modules, dbname):
     """Один прогін. → (returncode, log, timed_out, ms)"""
     pool = ROOT / "var" / "pool" / series
+    repos = ROOT / "var" / "repos" / series
     t0 = time.time()
     cmd = [
         "docker", "run", "--rm", "--network", "modidx",
         f"--memory={MEM}", "--memory-swap", MEM, "--cpus", "1.5",
         "--pids-limit", "512", "--security-opt", "no-new-privileges",
         "-v", f"{pool}:/mnt/pool:ro",
+        # Пул — це симлінки на АБСОЛЮТНІ шляхи хоста (var/repos/<серія>/<репо>/<модуль>).
+        # Без цього монтування вони всередині контейнера висять у нікуди, Odoo через
+        # _is_addons_path() не бачить у /mnt/pool жодного манифеста, пише
+        # "invalid addons directory '/mnt/pool', skipped" — і далі
+        # "invalid module names, ignored: <модуль>" при коді виходу 0.
+        # Тобто модуль НЕ ставиться, а виглядає як успіх. Перевірено 19.08.2026.
+        # Монтуємо тим самим абсолютним шляхом, щоб симлінки резолвились.
+        "-v", f"{repos}:{repos}:ro",
         # Параметри БД — тільки через env. Entrypoint образу дописує DB_ARGS з env
         # у кінець команди (exec odoo "$@" "${DB_ARGS[@]}"), тому флаги --db_host
         # і --db_password перебиваються дефолтами 'db' та 'odoo'. Див. mktemplate.sh.
@@ -142,11 +154,16 @@ def process(conn, items):
 
 def main():
     conn = connect()
-    print(f"воркер {WORKER} · BATCH={BATCH} · MEM={MEM}", flush=True)
+    print(f"воркер {WORKER} · BATCH={BATCH} · MEM={MEM}"
+          + (f" · MAX_JOBS={MAX_JOBS}" if MAX_JOBS else ""), flush=True)
     idle = 0
+    done = 0
     while True:
         items = claim(conn, BATCH)
         if not items:
+            if MAX_JOBS:            # ручний прогін: черга порожня — виходимо, а не чекаємо
+                print("  черга порожня, вихід", flush=True)
+                return
             idle += 1
             if idle == 1:
                 print("  черга порожня, чекаю", flush=True)
@@ -158,6 +175,10 @@ def main():
         except Exception as e:
             print(f"  ! помилка обробки: {e}", flush=True)
             finish(conn, [j["id"] for j, _ in items], "error")
+        done += len(items)
+        if MAX_JOBS and done >= MAX_JOBS:
+            print(f"  MAX_JOBS={MAX_JOBS} досягнуто, вихід", flush=True)
+            return
 
 
 if __name__ == "__main__":
