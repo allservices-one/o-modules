@@ -7,7 +7,7 @@
 BATCH>1 вмикає батч-режим із бісекцією: 8 модулів в одну БД, при падінні — розділити.
 Для першого масового проходу це дає виграш у 5-8 разів.
 """
-import os, socket, subprocess, sys, time, uuid
+import os, re, socket, subprocess, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT, _password
 from classify import classify, tail
@@ -30,7 +30,8 @@ def tmpl(series):
 def psql(sql, db="postgres"):
     return subprocess.run(
         ["docker", "exec", "-i", "-e", f"PGPASSWORD={PGPASS}", "modidx-pg",
-         "psql", "-U", "odoo", "-d", db, "-v", "ON_ERROR_STOP=1", "-c", sql],
+         "psql", "-U", "odoo", "-d", db, "-v", "ON_ERROR_STOP=1",
+         "-t", "-A", "-F", "|", "-c", sql],
         capture_output=True, text=True, timeout=120)
 
 
@@ -73,6 +74,36 @@ def run_install(series, modules, dbname):
         return 124, log, True, int((time.time() - t0) * 1000)
 
 
+SAFE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def check_installed(dbname, names):
+    """Факт установки з робочої БД, ДО її видалення.
+
+    Код виходу — це висновок, `ir_module_module.state='installed'` — факт.
+    rc=0 може означати «нічого не робив»: installable=False, неповний
+    addons-path, помилка в імені модуля — усі три дають rc=0.
+
+    → {name: (state, latest_version)} або None, якщо перевірити не вдалося
+      (БД не піднялася, psql не відповів). None і порожній dict — різні речі:
+      None означає «не знаю», і тоді статус з логу НЕ перевизначається.
+    """
+    safe = [n for n in names if SAFE_NAME.match(n)]
+    if not safe:
+        return None
+    lst = ",".join("'" + n + "'" for n in safe)
+    r = psql(f"SELECT name, state, coalesce(latest_version,'') "
+             f"FROM ir_module_module WHERE name IN ({lst})", db=dbname)
+    if r.returncode != 0:
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        parts = [c.strip() for c in line.split("|")]
+        if len(parts) == 3 and parts[0] in safe:
+            out[parts[0]] = (parts[1], parts[2] or None)
+    return out
+
+
 def fresh_db(series):
     name = "job_" + uuid.uuid4().hex[:12]
     r = psql(f'CREATE DATABASE {name} TEMPLATE {tmpl(series)}')
@@ -85,25 +116,41 @@ def drop_db(name):
     psql(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')
 
 
-def record(conn, module_id, series, head_sha, status, cause, detail, log, ms, batched):
+def record(conn, module_id, series, head_sha, status, cause, detail, log, ms,
+           batched, latest_version=None):
     conn.cursor().execute("""
         INSERT INTO runs (module_id, series, head_sha, status, cause, detail,
-                          log_tail, duration_ms, odoo_image, batched)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          log_tail, duration_ms, odoo_image, batched, latest_version)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """, (module_id, series, head_sha, status, cause, detail,
-          tail(log) if status not in ("ok",) else None, ms, f"odoo:{series}", batched))
+          tail(log) if status not in ("ok",) else None, ms, f"odoo:{series}", batched,
+          latest_version))
 
 
 def claim(conn, limit):
-    """Взяти задачі з черги. FOR UPDATE SKIP LOCKED — тому 2 воркери не б'ються."""
+    """Взяти задачі з черги. FOR UPDATE SKIP LOCKED — тому 2 воркери не б'ються.
+
+    Однорідність батчу за серією забезпечує САМ ЗАПИТ, а не відсів у Python.
+    Раніше `UPDATE state='running'` бив по всіх відібраних рядках, а поверталися
+    лише ті, що збіглися за серією з першим, — решта лишалася `running` назавжди.
+    На BATCH=1 не проявлялося, на межі серій тихо губило задачі.
+
+    `FOR UPDATE OF j` обов'язковий: у запиті з join до `head` звичайний
+    `FOR UPDATE` спробує залокати і `head`, а це агрегат — Postgres відмовить.
+
+    Гонка тут безпечна: якщо два воркери обчислять ту саму головну серію — це
+    саме те, що потрібно, а SKIP LOCKED розведе їх по різних рядках.
+    """
     cur = conn.cursor()
     cur.execute("""
-        WITH pick AS (
-          SELECT j.id FROM jobs j
-          WHERE j.state = 'queued'
+        WITH head AS (
+          SELECT series FROM jobs WHERE state='queued' ORDER BY priority, id LIMIT 1
+        ), pick AS (
+          SELECT j.id FROM jobs j, head
+          WHERE j.state='queued' AND j.series = head.series
           ORDER BY j.priority, j.id
           LIMIT %s
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF j SKIP LOCKED
         )
         UPDATE jobs j SET state='running', locked_by=%s, locked_at=now(), attempts=attempts+1
         FROM pick WHERE j.id = pick.id
@@ -115,14 +162,31 @@ def claim(conn, limit):
     ids = tuple(j["module_id"] for j in jobs)
     cur.execute("SELECT id, repo, module, series, head_sha FROM modules WHERE id IN %s", (ids,))
     meta = {m["id"]: m for m in cur.fetchall()}
-    # батч має бути однорідним за серією
-    series = jobs[0]["series"]
-    return [(j, meta[j["module_id"]]) for j in jobs if j["series"] == series]
+    return [(j, meta[j["module_id"]]) for j in jobs]
 
 
-def finish(conn, job_ids, state="done"):
+def finish(conn, job_ids):
+    """Успішно оброблену задачу ВИДАЛЯЄМО з черги.
+
+    Історія прогонів живе в `runs`; черзі вона не потрібна. Раніше тут стояв
+    UPDATE state='done', і на другому проході harvest (новий head_sha → друга
+    задача на той самий модуль) її фінальний UPDATE зіткнувся б із рядком 'done'
+    від першого проходу через UNIQUE (module_id, state). Констрейнт прибрано,
+    натомість частковий jobs_active_uniq лише на queued/running — див. schema.sql.
+    """
     if job_ids:
-        conn.cursor().execute("UPDATE jobs SET state=%s WHERE id IN %s", (state, tuple(job_ids)))
+        conn.cursor().execute("DELETE FROM jobs WHERE id IN %s", (tuple(job_ids),))
+
+
+def fail_jobs(conn, job_ids):
+    """Задачу, що впала в самому харнесі, лишаємо в черзі зі станом error —
+    щоб було видно, що падало. Частковий індекс її не покриває, дублів не буде."""
+    if job_ids:
+        conn.cursor().execute(
+            "UPDATE jobs SET state='error' WHERE id IN %s", (tuple(job_ids),))
+
+
+MARK = {"ok": "✓", "warn": "!", "dep": "▲", "env": "~", "fail": "✗", "timeout": "⏱"}
 
 
 def process(conn, items):
@@ -132,17 +196,35 @@ def process(conn, items):
     db = fresh_db(series)
     try:
         rc, log, to, ms = run_install(series, names, db)
+        # ДО drop_db: сама БД і є доказом. Після видалення питати нема в кого.
+        inst = check_installed(db, names) if not to else None
     finally:
         drop_db(db)
 
     if rc == 0 or len(items) == 1:
-        status, cause, detail = classify(log, rc, to)
+        base = classify(log, rc, to)
+        per = ms // max(1, len(items))
+        marks = []
         for _, m in items:
+            status, cause, detail = base
+            ver = None
+            if inst is not None:
+                st, ver = inst.get(m["module"], (None, None))
+                if rc == 0 and st != "installed":
+                    # Весь клас «тихого успіху» одним місцем: installable=False,
+                    # неповний addons-path, помилка в імені. Це збій харнесу або
+                    # властивість пакування, а НЕ несумісність із версією, тому env.
+                    status, cause = "env", "not_installed_despite_rc0"
+                    detail = ("rc=0, але модуль не встановлено: ir_module_module.state="
+                              + (st or "запису немає"))
             record(conn, m["id"], series, m["head_sha"], status, cause, detail, log,
-                   ms // max(1, len(items)), len(items) > 1)
+                   per, len(items) > 1, ver)
+            marks.append(MARK.get(status, "?"))
         finish(conn, [j["id"] for j, _ in items])
-        mark = {"ok": "✓", "warn": "!", "dep": "▲", "env": "~", "fail": "✗", "timeout": "⏱"}.get(status, "?")
-        print(f"  {mark} [{series}] {', '.join(names)[:70]} {status}/{cause or '-'} {ms}ms", flush=True)
+        # У батчі статуси тепер можуть різнитися по модулях — друкуємо по одному
+        # знаку на модуль. Це і є відповідь «які саме не стали» без бісекції.
+        print(f"  {''.join(marks)} [{series}] {', '.join(names)[:70]}"
+              f" {base[0]}/{base[1] or '-'} {ms}ms", flush=True)
         return
 
     # батч упав — ділимо навпіл, щоб знайти винуватця
@@ -174,7 +256,7 @@ def main():
             process(conn, items)
         except Exception as e:
             print(f"  ! помилка обробки: {e}", flush=True)
-            finish(conn, [j["id"] for j, _ in items], "error")
+            fail_jobs(conn, [j["id"] for j, _ in items])
         done += len(items)
         if MAX_JOBS and done >= MAX_JOBS:
             print(f"  MAX_JOBS={MAX_JOBS} досягнуто, вихід", flush=True)

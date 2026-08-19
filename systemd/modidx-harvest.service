@@ -8,8 +8,11 @@ WorkingDirectory=/srv/modidx
 Environment=ROOT=/srv/modidx
 Environment=HARVEST_SERIES=16.0 17.0 18.0 19.0 20.0
 ExecStart=/usr/bin/python3 /srv/modidx/indexer/harvest.py
-ExecStartPost=/usr/bin/python3 /srv/modidx/indexer/enqueue.py
+# Порядок важливий: спершу чекаути, потім черга. Було навпаки — enqueue
+# наповнював чергу модулями, чиїх тек на диску ще немає, і перші задачі
+# після нової гілки гарантовано падали б у env через порожній addons-path.
 ExecStartPost=/bin/bash /srv/modidx/bin/sync_repos.sh
+ExecStartPost=/usr/bin/python3 /srv/modidx/indexer/enqueue.py
 MemoryMax=1G
 StandardOutput=append:/srv/modidx/var/logs/harvest.log
 StandardError=append:/srv/modidx/var/logs/harvest.log

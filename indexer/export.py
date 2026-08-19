@@ -18,7 +18,7 @@
 Візуальна мова — версійні чипи і власний знак. У підвалі кожної сторінки
 стоїть дисклеймер про непов'язаність із Odoo S.A. та OCA.
 """
-import csv, html, json, os, pathlib, sys, datetime
+import csv, html, json, os, pathlib, shutil, subprocess, sys, datetime
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT
 
@@ -308,6 +308,75 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False):
 <p class="ind">{t['independent']}</p></div></body></html>"""
 
 
+def _cmd(args, default=""):
+    """Тихо: status.json не має падати через відсутній git чи docker."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+        return r.stdout.strip() if r.returncode == 0 else default
+    except Exception:
+        return default
+
+
+def status_json(conn):
+    """Машинний зріз стану сервера → var/site/status.json.
+
+    Це канал, яким сесія без SSH бачить, що тут відбувається: харвест, черга,
+    прогони, версії образів. Публічний і без секретів — ні паролів, ні
+    внутрішніх шляхів, ні IP. Caddy віддає його з Cache-Control: no-store,
+    інакше читач бачив би вчорашній стан і робив із нього хибні висновки.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT series, count(*) c FROM modules GROUP BY 1 ORDER BY 1")
+    by_series = {r["series"]: r["c"] for r in cur.fetchall()}
+    cur.execute("SELECT max(taken_at) AS t FROM series_snapshots")
+    last_harvest = (cur.fetchone() or {}).get("t")
+    cur.execute("SELECT status, count(*) c FROM latest_runs GROUP BY 1 ORDER BY 1")
+    by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+    cur.execute("SELECT state, count(*) c FROM jobs GROUP BY 1 ORDER BY 1")
+    queue = {r["state"]: r["c"] for r in cur.fetchall()}
+    cur.execute("SELECT count(*) c FROM modules")
+    total_modules = cur.fetchone()["c"]
+
+    images = {}
+    for s in ("18.0", "19.0", "20.0"):
+        img = _cmd(["docker", "image", "inspect", f"odoo:{s}",
+                    "--format", "{{.Id}} {{.Created}}"])
+        if img:
+            iid, _, created = img.partition(" ")
+            images[s] = {"id": iid[:19], "created": created.strip()[:19]}
+
+    du = shutil.disk_usage("/")
+    mem_available_mb = None
+    try:
+        for line in pathlib.Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                mem_available_mb = int(line.split()[1]) // 1024
+                break
+    except Exception:
+        pass
+
+    data = {
+        "generated_at": NOW.isoformat(),
+        "commit": _cmd(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], "unknown"),
+        "harvest": {
+            "last_run": last_harvest.isoformat() if last_harvest else None,
+            "modules_by_series": by_series,
+        },
+        "runs": {
+            "by_status": by_status,
+            "tested": sum(by_status.values()),
+            "total_modules": total_modules,
+        },
+        "queue": {k: queue.get(k, 0) for k in ("queued", "running", "error")},
+        "images": images,
+        "disk_free_gb": round(du.free / 1024**3, 1),
+        "mem_available_mb": mem_available_mb,
+    }
+    SITE.mkdir(parents=True, exist_ok=True)
+    (SITE / "status.json").write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    return data
+
+
 def fetch(conn):
     cur = conn.cursor()
     cur.execute("""
@@ -415,6 +484,9 @@ document.getElementById('q').addEventListener('input',async e=>{{
 
 def build():
     conn = connect()
+    # Пишемо ПЕРШИМ і до перевірки на порожні дані: якщо даних нема, саме це
+    # й треба показати назовні, а не мовчати.
+    status_json(conn)
     rows, series = fetch(conn)
     if not rows:
         print("немає даних: спершу harvest.py"); return

@@ -72,6 +72,12 @@ allservices.one, www.allservices.one {
 	@data path /data/* /llms.txt /modules.json
 	header @data Cache-Control "public, max-age=3600"
 
+	# Машинний зріз стану для сесії без SSH (indexer/export.py → status_json).
+	# no-store, а не max-age: закешований status.json показував би вчорашній
+	# стан як сьогоднішній — гірше, ніж не мати його зовсім.
+	@status path /status.json
+	header @status Cache-Control "no-store"
+
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin

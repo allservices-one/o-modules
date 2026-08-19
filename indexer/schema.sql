@@ -24,8 +24,10 @@ CREATE TABLE IF NOT EXISTS runs (
   duration_ms  integer,
   odoo_image   text,
   batched      boolean NOT NULL DEFAULT false,
+  latest_version text,            -- версія з ir_module_module: реальний факт, не з манифеста
   created_at   timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS latest_version text;
 CREATE INDEX IF NOT EXISTS runs_module_idx  ON runs (module_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS runs_series_idx  ON runs (series, created_at DESC);
 CREATE INDEX IF NOT EXISTS runs_status_idx  ON runs (status);
@@ -44,10 +46,23 @@ CREATE TABLE IF NOT EXISTS jobs (
   attempts   int  NOT NULL DEFAULT 0,
   locked_by  text,
   locked_at  timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (module_id, state) DEFERRABLE INITIALLY DEFERRED
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS jobs_pick_idx ON jobs (state, priority, id);
+
+-- Тут стояв UNIQUE (module_id, state) — і це був баг, який спрацював би на
+-- ДРУГОМУ проході harvest: новий head_sha → enqueue вставляє другу задачу на той
+-- самий модуль, її фінальний UPDATE state='done' стикається з рядком 'done' від
+-- першого проходу. DEFERRABLE не рятує: db.py тримає autocommit=True, тобто кожен
+-- стейтмент — окрема транзакція і відкладати перевірку нікуди. Далі виняток пішов
+-- би в except, той поставив би 'error', і черга почала б забиватися.
+--
+-- Натомість унікальність лише серед АКТИВНИХ задач: один модуль не може стояти
+-- в черзі двічі, але скільки завгодно разів може бути пройденим. Завершені задачі
+-- видаляються (runner.finish), історія живе в runs.
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_module_id_state_key;
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_uniq ON jobs (module_id)
+  WHERE state IN ('queued','running');
 
 -- Знімки для публічного лідерборда: історія цифр по серіях
 CREATE TABLE IF NOT EXISTS series_snapshots (
