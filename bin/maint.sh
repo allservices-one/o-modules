@@ -3,27 +3,47 @@
 set -uo pipefail
 ROOT="${ROOT:-/srv/modidx}"
 cd "$ROOT"; set -a; . ./.env; set +a
-PSQL="docker exec -i -e PGPASSWORD=$PGPASSWORD modidx-pg psql -U odoo -d postgres -tA"
+# `-e ІМʼЯ` без значення: docker бере змінну з оточення. Інакше пароль лежав би
+# у argv кожного виклику й світився в ps, systemctl status і journald.
+export PGPASSWORD
+PSQL="docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d postgres -tA"
 
 echo "=== $(date -Is) ==="
 
-# 1. Осиротілі БД прогонів (якщо воркер упав, не встигнувши прибрати)
-$PSQL -c "SELECT datname FROM pg_database WHERE datname LIKE 'job\_%'" | while read -r db; do
-  [ -n "$db" ] && $PSQL -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" >/dev/null && echo "прибрано БД $db"
+# 1. Осиротілі БД прогонів (якщо воркер упав, не встигнувши прибрати).
+#
+# УВАГА: тут був баг, здатний знищити цілий нічний прохід. Умовою було просто
+# datname LIKE 'job_%', а DROP ішов з WITH (FORCE) — тобто скрипт о 04:40
+# обривав з'єднання ЖИВИХ прогонів і вбивав усе, що на той момент ставилося.
+# Прохід на 3,5 тисячі модулів триває 10 годин і 04:40 припадає рівно на його
+# середину, тому це спрацювало б у першу ж ніч.
+#
+# Два незалежні критерії, обидва обов'язкові:
+#   1) до бази немає жодного з'єднання — живий прогін тримає його весь час;
+#   2) тека бази старша за 30 хвилин — закриває вузьке вікно між
+#      CREATE DATABASE і першим підключенням контейнера (RUN_TIMEOUT=420 с,
+#      тобто 30 хвилин із великим запасом).
+$PSQL -c "
+SELECT d.datname FROM pg_database d
+WHERE d.datname LIKE 'job\_%'
+  AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname)
+  AND (pg_stat_file('base/'||d.oid)).modification < now() - interval '30 minutes'
+" | while read -r db; do
+  [ -n "$db" ] && $PSQL -c "DROP DATABASE IF EXISTS $db WITH (FORCE)" >/dev/null && echo "прибрано осиротілу БД $db"
 done
 
 # 2. Історія прогонів: тримаємо 5 останніх на модуль
-docker exec -i -e PGPASSWORD="$PGPASSWORD" modidx-pg psql -U odoo -d modidx -c "
+docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d modidx -c "
 WITH ranked AS (
   SELECT id, row_number() OVER (PARTITION BY module_id ORDER BY created_at DESC) rn FROM runs
 ) DELETE FROM runs WHERE id IN (SELECT id FROM ranked WHERE rn > 5);" >/dev/null
 
 # 3. VACUUM
-docker exec -i -e PGPASSWORD="$PGPASSWORD" modidx-pg psql -U odoo -d modidx -c "VACUUM ANALYZE;" >/dev/null
+docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d modidx -c "VACUUM ANALYZE;" >/dev/null
 
 # 4. Бекап схеми і результатів (не одноразових БД)
 mkdir -p var/backups
-docker exec -e PGPASSWORD="$PGPASSWORD" modidx-pg pg_dump -U odoo -d modidx \
+docker exec -e PGPASSWORD modidx-pg pg_dump -U odoo -d modidx \
   | gzip > "var/backups/modidx-$(date +%F).sql.gz"
 ls -1t var/backups/*.sql.gz | tail -n +8 | xargs -r rm --
 
@@ -63,7 +83,7 @@ if [ -n "$PROBLEM" ]; then
 fi
 
 # 9. Завислі задачі — повернути в чергу
-docker exec -i -e PGPASSWORD="$PGPASSWORD" modidx-pg psql -U odoo -d modidx -c "
+docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d modidx -c "
 UPDATE jobs SET state='queued', locked_by=NULL
 WHERE state='running' AND locked_at < now() - interval '1 hour' AND attempts < 3;" >/dev/null
 
