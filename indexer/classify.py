@@ -28,6 +28,20 @@ RULES = [
      "Незадоволена зовнішня залежність: {0}"),
     ("env_binary", r"Unable to find ['\"]?([\w\.\-]+)['\"]? in path",
      "Немає системної утиліти в образі: {0}"),
+    ("env_missing_python",
+     r"Package .packaging. is required to parse .([^`']+). external dependency",
+     "Немає зовнішнього python-пакета: {0}"),
+    # Структурний запобіжник: не за текстом повідомлення, а за шляхом у стеку.
+    # Формулювань у Odoo щонайменше п'ять і вони міняються між серіями — ганятися
+    # за кожним означає щоразу дізнаватися про сліпу зону вже з опублікованих
+    # цифр. Ці три функції існують РІВНО для перевірки external_dependencies,
+    # тому їхня поява в трейсбеку однозначно означає проблему оточення, а не
+    # несумісність модуля з версією. Правило стоїть після точних: ті дають
+    # назву пакета, це — лише гарантію, що ми не зарахуємо env як fail.
+    ("env_missing_python",
+     r"check_python_external_dependency|check_manifest_dependencies"
+     r"|check_external_dependencies|MissingDependency",
+     "Незадоволена зовнішня залежність модуля"),
     ("env_missing_python", r"ModuleNotFoundError: No module named '([\w\.]+)'",
      "Немає зовнішнього python-пакета: {0}"),
     ("env_missing_python", r"Unmet external Python dependencies?:?\s*(.+)",
