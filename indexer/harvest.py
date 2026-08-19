@@ -5,6 +5,7 @@
 Запускати щодня по таймеру. Саме цей скрипт дає цифри для публічного табло.
 """
 import ast, csv, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -18,49 +19,100 @@ NOT_MODULE_DIRS = {"setup", "docs", ".github", ".gitea", "tests", "template"}
 # тільки в інший бік. Ті самі правила, що й у bin/sync_repos.sh — списки модулів
 # у БД і в пулі адонів мусять збігатися, інакше runner отримує фантоми.
 MANIFEST_AT_TOP = re.compile(r"^([^/]+)/__manifest__\.py$")
-LIST = ROOT / "var" / "oca_repos.txt"
-WORK = pathlib.Path(tempfile.mkdtemp(prefix="harvest-"))
+# Список репозиторіїв живе В GIT, не у var/: кожна зміна екосистеми стає діффом
+# у комміті, і поява чи зникнення репозиторію OCA — подія в історії, а не
+# невидимість. Це заодно дані, яких більше ні в кого немає.
+LIST = ROOT / "data" / "oca_repos.txt"
+LIST_LEGACY = ROOT / "var" / "oca_repos.txt"        # кеш зі старої схеми
+
+# Службові репозиторії OCA: інструменти, шаблони, дзеркала — модулів не містять.
+SKIP_REPOS = {
+    "maintainer-tools", "OCB", "OpenUpgrade", "openupgradelib", "pylint-odoo",
+    "odoo-module-migrator", "oca-port", "oca-ci", "oca-github-bot", "oca-custom",
+    ".github", "ansible-odoo", "odoo-community.org", "odoorpc", "oca-decorators",
+    "odoo-pre-commit-hooks", "odoo-sentinel", "odoo-sphinx-autodoc",
+    "maintainer-quality-tools", "oca-addons-repo-template", "mirrors-flake8",
+    "contribute-md-template", "oca.recipe.odoo", "oca-weblate-deployment",
+    "connector-magento-php-extension", "odoo-test-helper", "repo-maintainer",
+    "repo-maintainer-conf", "module-composition-analysis",
+}
+# Якщо новий список коротший за кеш більш ніж на стільки — не застосовувати.
+# Той самий принцип, що в жниві: масова втрата — це майже завжди наш збій.
+LIST_SHRINK_MAX = int(os.environ.get("LIST_SHRINK_MAX", "5"))
 
 
-def sh(args, cwd=None, timeout=180):
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def _github_org_repos(org="OCA", pages=10):
+    """Перелік репозиторіїв організації. 3 запити на добу, БЕЗ токена.
+
+    Джерело істини саме API, бо старий шлях (tools/repos_with_ids.txt у
+    OCA/maintainer-tools) в апстрімі зник, і кеш через це відстав на 56
+    репозиторіїв — чверть екосистеми. Сама OCA теж перейшла на API
+    (gh.repositories_by("OCA") у tools/oca_projects.py), тобто це канонічний
+    спосіб, а не обхід. Анонімний ліміт 60 запитів/год, нам треба 3 на добу.
+    """
+    out, seen_page = [], 0
+    for page in range(1, pages + 1):
+        url = f"https://api.github.com/orgs/{org}/repos?per_page=100&page={page}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "modidx-harvest",
+            "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.load(r)
+        if not data:
+            break
+        seen_page += 1
+        for repo in data:
+            # fork і archived відсіюємо тут, а не потім: форк організації — це
+            # чуже дзеркало, архів — заморожений код, у якому гілок не буває.
+            if repo.get("archived") or repo.get("fork"):
+                continue
+            out.append(repo["name"])
+    if seen_page == 0:
+        raise RuntimeError("GitHub API повернув порожній перший аркуш")
+    return out
+
+
+def _read_list(path):
+    if path.exists() and path.stat().st_size:
+        return sorted({l.strip() for l in path.read_text().splitlines() if l.strip()})
+    return []
 
 
 def repo_names():
-    if LIST.exists() and LIST.stat().st_size:
-        return sorted({l.strip() for l in LIST.read_text().splitlines() if l.strip()})
-    tmp = WORK / "mt"
-    sh(["git", "clone", "-q", "--depth", "1",
-        "https://github.com/OCA/maintainer-tools", str(tmp)])
-    src = tmp / "tools" / "repos_with_ids.txt"
-    if not src.exists():
-        # Станом на 19.08.2026 цього файлу в maintainer-tools БІЛЬШЕ НЕМАЄ:
-        # OCA перейшла на перелік через GitHub API (tools/oca_projects.py,
-        # gh.repositories_by("OCA")). Тобто цей шлях мертвий, і список живе
-        # тільки як кеш у var/oca_repos.txt.
-        #
-        # НЕ мовчати: раніше тут був би FileNotFoundError із незрозумілим
-        # трейсбеком, а порада з CLAUDE.md «видалити var/oca_repos.txt, він
-        # перезбереться» тихо зламала б harvest. Список станом на 19.08.2026
-        # відстає від OCA на 56 репозиторіїв з модулями — див.
-        # ops/outbox/0007. Рішення про нове джерело за власником.
-        raise SystemExit(
-            "harvest: джерело списку репозиторіїв недоступне — "
-            f"{src} немає в OCA/maintainer-tools (файл прибрано в апстрімі).\n"
-            "Список береться з кешу var/oca_repos.txt. Якщо кеш видалено — "
-            "відновити його з git або узгодити нове джерело (ops/outbox/0007).")
-    txt = src.read_text()
-    skip = {"maintainer-tools", "OCB", "OpenUpgrade", "openupgradelib", "pylint-odoo",
-            "odoo-module-migrator", "oca-port", "oca-ci", "oca-github-bot", "oca-custom",
-            ".github", "ansible-odoo", "odoo-community.org", "odoorpc", "oca-decorators",
-            "odoo-pre-commit-hooks", "odoo-sentinel", "odoo-sphinx-autodoc",
-            "maintainer-quality-tools", "oca-addons-repo-template", "mirrors-flake8",
-            "contribute-md-template", "oca.recipe.odoo", "oca-weblate-deployment",
-            "connector-magento-php-extension", "odoo-test-helper"}
-    names = sorted({m for m in re.findall(r"github\.com/OCA/(\S+)", txt) if m not in skip})
+    """Список репозиторіїв OCA: API — джерело істини, git-кеш — аварійний фолбек."""
+    cached = _read_list(LIST) or _read_list(LIST_LEGACY)
+
+    try:
+        fresh = sorted(set(_github_org_repos()) - SKIP_REPOS)
+    except Exception as e:
+        # Ніколи не індексувати підмножину мовчки: саме так і з'явилися ті 56.
+        if not cached:
+            raise SystemExit(f"harvest: GitHub API недоступний ({e}) і кешу немає. "
+                             f"Відновіть {LIST} з git.")
+        print(f"  !! GitHub API недоступний ({e}) — працюю з КЕШУ {LIST.name}, "
+              f"{len(cached)} репозиторіїв. Список може відставати.", file=sys.stderr)
+        return cached
+
+    if cached:
+        gone = sorted(set(cached) - set(fresh))
+        added = sorted(set(fresh) - set(cached))
+        if len(cached) - len(fresh) > LIST_SHRINK_MAX:
+            print(f"  !! список ЗУПИНЕНО: було {len(cached)}, стало {len(fresh)} "
+                  f"(−{len(cached)-len(fresh)}, межа −{LIST_SHRINK_MAX}). "
+                  f"Працюю з кешу, список не оновлюю.", file=sys.stderr)
+            for n in gone[:20]:
+                print(f"     зник: {n}", file=sys.stderr)
+            return cached
+        # Новий репозиторій індексуємо, але НАЗИВАЄМО: інакше службовий одного дня
+        # тихо потрапить у статистику як «модулі».
+        for n in added:
+            print(f"  + новий репозиторій OCA: {n}", file=sys.stderr)
+        for n in gone:
+            print(f"  − зник зі списку OCA: {n}", file=sys.stderr)
+
     LIST.parent.mkdir(parents=True, exist_ok=True)
-    LIST.write_text("\n".join(names) + "\n")
-    return names
+    LIST.write_text("\n".join(fresh) + "\n")
+    return fresh
 
 
 def remote_branches(repo):

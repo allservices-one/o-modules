@@ -4,7 +4,7 @@
 set -euo pipefail
 ROOT="${ROOT:-/srv/modidx}"
 SERIES="${SERIES:-18.0 19.0}"
-LIST="$ROOT/var/oca_repos.txt"
+LIST="$ROOT/data/oca_repos.txt"
 NOT_MODULE_DIRS="setup docs tests template"
 
 mkdir -p "$ROOT/var/repos" "$ROOT/var/pool"
