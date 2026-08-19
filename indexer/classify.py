@@ -53,6 +53,15 @@ RULES = [
     ("timeout", r"__RUNNER_TIMEOUT__", "Прогін перевищив ліміт часу"),
 
     # --- залежності в межах Odoo ---
+    # Формулювання Odoo при відсутньому МОДУЛІ-залежності (не python-пакеті):
+    #   You try to install module "X" that depends on module "Y".
+    #   But the latter module is not available in your system.
+    # Спіймано 19.08.2026: три модулі field-service лягли в fail/registry, тобто
+    # були зараховані як несумісні з 19.0, хоча насправді просто немає модуля
+    # agreement / agreement_sale / sign_oca. Це dep, і в несумісність не йде.
+    ("dep_missing_module",
+     r"that depends on module ['\"]?([\w\.]+)",
+     "Залежний модуль недоступний: {0}"),
     ("dep_missing_module", r"module (\S+) not found|Some modules are not loaded, some dependencies or manifest may be missing: \[?'?([\w_]+)",
      "Залежний модуль недоступний у цій серії: {0}"),
     ("dep_uninstallable", r"'installable': False|module is not installable",
@@ -73,8 +82,17 @@ RULES = [
     ("sql_error", r"(psycopg2\.\w+Error|IntegrityError|ProgrammingError)",
      "Помилка SQL при установці"),
     ("py_syntax", r"(SyntaxError|IndentationError)", "Синтаксична помилка python"),
-    ("registry", r"Failed to (load|initialize) registry", "Реєстр не зібрався"),
+    # "Failed to load registry" присутнє в БУДЬ-ЯКОМУ падінні install, тому це
+    # не причина, а симптом. Правило лишається останнім, але деталь тепер несе
+    # справжній рядок помилки: інакше кожна нерозпізнана причина виглядала б
+    # упевнено діагностованою («Реєстр не зібрався») і мовчки зараховувалась
+    # модулю як несумісність. Саме так тричі за один день сюди потрапляли
+    # відсутні python-пакети й відсутні модулі-залежності.
+    ("registry", r"Failed to (?:load|initialize) registry", "НЕРОЗПІЗНАНО: {0}"),
 ]
+
+# Рядок, який найімовірніше пояснює падіння: останній «Тип: текст» винятку.
+EXC_LINE = re.compile(r"^(?:[\w\.]+\.)?(\w*(?:Error|Exception|Warning)): (.+)$")
 
 WARN_PATTERNS = [
     (r"DeprecationWarning|is deprecated", "Використовує застарілий API"),
@@ -130,6 +148,8 @@ def classify(log: str, returncode: int, timed_out: bool = False):
             # беремо найконкретнішу непорожню групу: остання непорожня зазвичай і є назвою
             groups = [g.strip() for g in (m.groups() or ()) if g and g.strip()]
             pick = groups[-1] if groups else (m.group(0) or "")
+            if cause == "registry":
+                pick = _exception_line(text) or pick
             detail = tmpl.replace("{0}", pick[:160]) if "{0}" in tmpl else tmpl
             status = {
                 "env_missing_python": "env", "env_binary": "env", "env_db": "env",
@@ -138,8 +158,23 @@ def classify(log: str, returncode: int, timed_out: bool = False):
             }.get(cause, "fail")
             return status, cause, detail.strip()
 
-    last = [l for l in text.strip().splitlines() if l.strip()][-1:] or [""]
-    return "fail", "unknown", last[0][:300]
+    last = _exception_line(text) or (
+        ([l for l in text.strip().splitlines() if l.strip()][-1:] or [""])[0])
+    return "fail", "unknown", last[:300]
+
+
+def _exception_line(text: str):
+    """Останній рядок виду `SomeError: пояснення` — саме він пояснює падіння.
+
+    Без цього деталь нерозпізнаного падіння була рядком трейсбеку («raise
+    UserError(_(»), з якого причину не видно, і сліпа зона класифікатора
+    лишалася непоміченою до наступного ручного перегляду логів.
+    """
+    for line in reversed(text.strip().splitlines()):
+        m = EXC_LINE.match(line.strip())
+        if m:
+            return f"{m.group(1)}: {m.group(2)}"
+    return None
 
 
 def tail(log: str, lines: int = 60) -> str:
