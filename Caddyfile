@@ -72,6 +72,18 @@ allservices.one, www.allservices.one {
 	@data path /data/* /llms.txt /modules.json
 	header @data Cache-Control "public, max-age=3600"
 
+	# Atom-фіди. Без явного типу file_server віддав би їх як text/xml, і частина
+	# читалок або не підхопить автовиявлення, або покаже сирий XML у браузері.
+	# Кеш короткий: фід оновлюється щогодини разом з export.
+	# `*` у path-матчері Caddy НЕ переходить через `/`, тому /feed/*.xml не
+	# ловить /feed/vendor/<slug>.xml. Перевірено на живому: вендорські фіди
+	# віддавались як text/xml. Беремо все під /feed/ — там лише фіди.
+	@feeds path /feed.xml /feed/*
+	header @feeds {
+		Content-Type "application/atom+xml; charset=utf-8"
+		Cache-Control "public, max-age=900"
+	}
+
 	# Машинний зріз стану для сесії без SSH (indexer/export.py → status_json).
 	# no-store, а не max-age: закешований status.json показував би вчорашній
 	# стан як сьогоднішній — гірше, ніж не мати його зовсім.

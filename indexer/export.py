@@ -190,8 +190,24 @@ image is recorded as an <b>environment problem</b> and is <b>not</b> counted aga
 module. The same applies when the harness itself fails to expose the module to Odoo. This is
 deliberate: without that separation the statistics would be untrue, and an untrue index is
 worth nothing.</p>
+<h2>What the percentages are measured against</h2>
+<p>Every published percentage names its own denominator, because a percentage without one
+can be moved simply by changing what you count. A module counts as <b>runnable</b> only if
+we can obtain it, it declares itself installable, and the series is one we actually run.
+Concretely, these are excluded from both the numerator and the denominator:</p><ul>
+<li><b>Not installable by manifest</b> — the module itself sets <code>installable: False</code>.
+These are meta-packages, leftovers of unported code and deprecation shims. Counting them as
+&laquo;broken&raquo; would move our headline number with the number of meta-packages, which has
+nothing to do with version compatibility.</li>
+<li><b>Series we do not run</b> — 16.0 and 17.0 are indexed from git but never installed, so
+they are marked as not covered rather than pretended to be pending.</li>
+<li><b>Cannot be verified</b> — see the note on the Apps Store below.</li></ul>
+<p>So &laquo;91% install cleanly&raquo; is always written out in full: how many of how many
+<i>tested</i>, and separately how many are runnable out of the total.</p>
 <h2>Limits</h2><ul>
-<li>Paid modules cannot be installed without a licence — for those we publish metadata only.</li>
+<li>Paid Apps Store modules cannot be installed without a licence, and the Store provides no
+way to enumerate its listings that its own <code>robots.txt</code> permits. They are outside
+this index entirely: we neither run nor list them.</li>
 <li>An install check is not a functional test: a module can install and still misbehave.</li>
 <li>Batch mode: on a mass pass modules are installed in groups; if a group fails, each member
 is retried alone. The dataset records this in the <code>batched</code> field.</li></ul>
@@ -206,8 +222,24 @@ is retried alone. The dataset records this in the <code>batched</code> field.</l
 <b>проблема середовища</b> і <b>не</b> зараховується модулю. Так само — якщо сам харнес не подав
 модуль до Odoo. Це навмисно: без такого розділення статистика була б неправдивою, а неправдивий
 індекс не вартий нічого.</p>
+<h2>Від чого рахуються відсотки</h2>
+<p>Кожен опублікований відсоток називає свій знаменник, бо відсоток без знаменника
+пересувається простою зміною того, що рахувати. Модуль вважається <b>прогонабельним</b>,
+лише якщо ми можемо його дістати, він сам заявляє себе встановлюваним, і серія — з тих,
+які ми справді проганяємо. Не входять ні в чисельник, ні в знаменник:</p><ul>
+<li><b>Не встановлювані за манифестом</b> — модуль сам ставить <code>installable: False</code>.
+Це метапакети, залишки неперенесеного коду й оболонки для депрекації. Зарахувати їх до
+&laquo;зламаних&raquo; означало б рухати головну цифру разом із кількістю метапакетів, а це
+не має жодного стосунку до сумісності з версією.</li>
+<li><b>Серії, які ми не проганяємо</b> — 16.0 і 17.0 індексуються з git, але не встановлюються,
+тому позначені як не охоплені, а не як такі, що чекають прогону.</li>
+<li><b>Неможливі до перевірки</b> — див. нижче про Apps Store.</li></ul>
+<p>Тому &laquo;91% встановлюються чисто&raquo; завжди пишеться повністю: скільки зі скількох
+<i>перевірених</i>, і окремо скільки прогонабельних із загальної кількості.</p>
 <h2>Обмеження</h2><ul>
-<li>Платні модулі без ліцензії не встановлюються — для них публікуються лише метадані.</li>
+<li>Платні модулі Apps Store без ліцензії не встановлюються, а сам Store не має способу
+перелічити свої листинги, який дозволяв би його власний <code>robots.txt</code>. Вони поза
+цим індексом повністю: ми їх не проганяємо і не перелічуємо.</li>
 <li>Install-прогін не є тестом функціональності: модуль може встановитися і працювати неправильно.</li>
 <li>Батч-режим: при масовому проході модулі ставляться групами, при падінні групи кожен
 перевіряється окремо. У даних це позначено полем <code>batched</code>.</li></ul>
@@ -335,7 +367,7 @@ def chip(status, lang):
     return f'<span class="c {cls}"><span>{ic}</span>{st_label(status, lang)}</span>'
 
 
-def page(lang, url, title, body, desc="", jsonld=None, noindex=False):
+def page(lang, url, title, body, desc="", jsonld=None, noindex=False, feed="/feed.xml"):
     """Сторінка з canonical на себе і hreflang на обидві мови.
 
     noindex=True ставить <meta name="robots" content="noindex"> — для сторінок,
@@ -351,6 +383,10 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False):
     alts = "".join(
         f'<link rel="alternate" hreflang="{lg}" href="{BASE}{loc(lg, url)}">' for lg in LANGS
     ) + f'<link rel="alternate" hreflang="x-default" href="{BASE}{loc(DEFAULT_LANG, url)}">'
+    # Автовиявлення фіда: читалка підхоплює правильний фід сама, і це половина
+    # справи. На сторінці вендора — його власний, скрізь інде — загальний.
+    alts += (f'<link rel="alternate" type="application/atom+xml" '
+             f'title="{html.escape(title)}" href="{BASE}{feed}">')
     return f"""<!DOCTYPE html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
@@ -367,6 +403,83 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False):
 {t['footer_updated'].format(d=f'{NOW:%Y-%m-%d %H:%M}')} · {t['footer_fact']} ·
 <a href="{loc(lang, '/data/')}">{t['footer_open']}</a></p>
 <p class="ind">{t['independent']}</p></div></body></html>"""
+
+
+FEED_MAX = 200          # більше читалці не потрібно, а віддавати дешевше
+FEED_NS = "2026"        # рік у tag: URI. Ніколи не міняти — id мусить бути вічним.
+
+
+def slug(s):
+    """Ім'я вендора → стабільний шматок URL."""
+    out = "".join(c.lower() if c.isalnum() else "-" for c in s)
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-") or "x"
+
+
+def atom(entries, title, self_path, feed_id, lang="en"):
+    """Atom 1.0. Не RSS 2.0: там немає нормальних `id` і `updated`, а саме на
+    них тримається вся коректність фіда.
+
+    Три речі, на яких саморобні фіди ламаються, і всі три тут закриті:
+
+    * `<id>` запису — `tag:...:change/<run_id>`, вічний і унікальний на подію.
+      Не URL модуля: URL повторюється, і читалка склеїла б різні події в одну.
+    * `<updated>` — час ПРОГОНУ, не час генерації. Інакше кожна регенерація
+      сайту помічає весь фід як непрочитаний.
+    * `<updated>` самого фіда — час найсвіжішої події, а не `now()`, з тієї ж
+      причини.
+    """
+    upd = max((e["at"] for e in entries), default=NOW)
+    items = []
+    for e in entries:
+        items.append(
+            f"<entry><title>{html.escape(e['title'])}</title>"
+            f"<id>tag:allservices.one,{FEED_NS}:change/{e['key']}</id>"
+            f"<updated>{e['at'].astimezone(datetime.timezone.utc).isoformat()}</updated>"
+            f'<link rel="alternate" href="{BASE}{e["url"]}"/>'
+            f'<content type="text">{html.escape(e["text"])}</content></entry>')
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="%s">'
+        "<title>%s</title>"
+        '<id>tag:allservices.one,%s:%s</id>'
+        "<updated>%s</updated>"
+        '<link rel="self" href="%s%s"/>'
+        '<link rel="alternate" href="%s/"/>'
+        "%s</feed>\n" % (
+            lang, html.escape(title), FEED_NS, feed_id,
+            upd.astimezone(datetime.timezone.utc).isoformat(),
+            BASE, self_path, BASE, "".join(items)))
+
+
+def feed_entries(conn):
+    """Події для фідів: тільки НЕ засіяні зміни, найсвіжіші зверху."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.run_id, c.series, c.state_old, c.state_new,
+               c.status_old, c.status_new, c.at,
+               m.repo, m.module, m.vendors
+        FROM state_changes c JOIN modules m ON m.id = c.module_id
+        WHERE NOT c.seeded
+        ORDER BY c.at DESC, c.id DESC
+        LIMIT %s
+    """, (FEED_MAX * 4,))
+    out = []
+    for r in cur.fetchall():
+        was = r["status_old"] or r["state_old"] or "—"
+        now_ = r["status_new"] or r["state_new"]
+        out.append({
+            "key": r["run_id"],
+            "at": r["at"],
+            "series": r["series"],
+            "vendors": list(r["vendors"] or []),
+            "url": f"/m/{r['repo']}/{r['module']}/",
+            "title": f"{r['module']} ({r['series']}): {was} → {now_}",
+            "text": f"{r['module']} in {r['repo']}, Odoo {r['series']}: "
+                    f"{was} → {now_}.",
+        })
+    return out
 
 
 def _cmd(args, default=""):
@@ -456,6 +569,17 @@ def status_json(conn):
     SITE.mkdir(parents=True, exist_ok=True)
     (SITE / "status.json").write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n")
     return data
+
+
+def meta_of(v, series):
+    """Метадані модуля з найновішої серії, де манифест реально розібрано.
+
+    Для 16.0/17.0 чекаутів немає, тому брати «першу-ліпшу серію» означало б
+    показати порожню картку тому, хто є на 16.0 і на 19.0.
+    """
+    return (next((v[s] for s in reversed(series)
+                  if s in v and v[s].get("manifest_version")), None)
+            or next((v[s] for s in reversed(series) if s in v), {}))
 
 
 def fetch(conn):
@@ -768,6 +892,10 @@ def build():
     # «не перенесено» і «не встановлюється» — різні твердження.
     bd = breakdown([dict(v[newest], in_scope=newest in TESTED_SERIES)
                     for v in mods.values() if newest in v])
+    vendor_slugs = {}
+    for v in mods.values():
+        for ven in (meta_of(v, series).get("vendors") or []):
+            vendor_slugs.setdefault(ven, slug(ven))
 
     for lang in LANGS:
         out_path(lang, "data").mkdir(parents=True, exist_ok=True)
@@ -813,8 +941,7 @@ def build():
                     logs = (f"<h2>{t['m_log'].format(s=s)}</h2>"
                             f"<pre>{html.escape(r['log_tail'])}</pre>")
                     break
-            meta = next((v[s] for s in reversed(series)
-                         if s in v and v[s].get("manifest_version")), {})
+            meta = meta_of(v, series)
             facts = ""
             if meta.get("summary"):
                 facts += f'<p class="lead">{html.escape(meta["summary"])}</p>'
@@ -847,8 +974,11 @@ def build():
                      else f"{mod} — сумісність з версіями Odoo")
             desc = (f"Does {mod} from {repo} install on each Odoo series." if lang == "en"
                     else f"Чи встановлюється модуль {mod} з {repo} на версії Odoo.")
+            newest_here = next((s for s in reversed(series) if s in v), None)
             (d / "index.html").write_text(
-                page(lang, f"/m/{repo}/{mod}/", title, b, desc, ld, noindex=not has_status))
+                page(lang, f"/m/{repo}/{mod}/", title, b, desc, ld,
+                     noindex=not has_status,
+                     feed=f"/feed/{newest_here}.xml" if newest_here else "/feed.xml"))
         # Метадані є лише там, де є чекаут (18.0/19.0). Беремо найновішу
         # серію, у якій манифест реально розібрано, інакше картка модуля
         # виглядала б порожньою через те, що першою трапилась 16.0.
@@ -905,9 +1035,7 @@ def build():
                    + [f"{s}_installable" for s in series]
                    + [f"{s}_version" for s in series])
         for (repo, mod), v in sorted(mods.items()):
-            meta = next((v[s] for s in reversed(series)
-                         if s in v and v[s].get("manifest_version")), {}) \
-                or next((v[s] for s in reversed(series) if s in v), {})
+            meta = meta_of(v, series)
 
             def st_of(s):
                 if s not in v:
@@ -976,6 +1104,55 @@ def build():
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
         ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
         + "\n".join(urls) + "\n</urlset>\n")
+
+    # ---------- Atom-фіди ----------
+    # Фід по вендору — головний з трьох: він потрапляє в чужий робочий процес
+    # без листа й без реєстрації. У Tecnativa 328 модулів на 19.0; вони
+    # підписуються раз і бачать свої поломки раніше за користувачів.
+    events = feed_entries(conn)
+    (SITE / "feed").mkdir(parents=True, exist_ok=True)
+    (SITE / "feed" / "vendor").mkdir(parents=True, exist_ok=True)
+
+    (SITE / "feed.xml").write_text(atom(
+        events[:FEED_MAX], f"{TITLE} — module state changes", "/feed.xml", "feed"))
+
+    for s in series:
+        sub = [e for e in events if e["series"] == s][:FEED_MAX]
+        (SITE / "feed" / f"{s}.xml").write_text(atom(
+            sub, f"{TITLE} — Odoo {s}", f"/feed/{s}.xml", f"feed/{s}"))
+
+    for ven, sl in sorted(vendor_slugs.items(), key=lambda kv: kv[1]):
+        sub = [e for e in events if ven in e["vendors"]][:FEED_MAX]
+        (SITE / "feed" / "vendor" / f"{sl}.xml").write_text(atom(
+            sub, f"{TITLE} — {ven}", f"/feed/vendor/{sl}.xml", f"feed/vendor/{sl}"))
+
+    # ---------- сторінки вендорів ----------
+    # Потрібні не заради самих сторінок, а щоб фід вендора взагалі можна було
+    # знайти: читалка підхоплює його з <link rel="alternate"> у <head>.
+    for ven, sl in vendor_slugs.items():
+        items = sorted((k, v) for k, v in mods.items()
+                       if ven in (meta_of(v, series).get("vendors") or []))
+        for lang in LANGS:
+            tt = T[lang]
+            head_v = "".join(f"<th>{s}</th>" for s in series[-4:])
+            rws = "".join(
+                f'<tr><td><a href="{loc(lang, f"/m/{repo}/{m}/")}">{m}</a> '
+                f'<span class="mut">{repo}</span></td>' +
+                "".join(f"<td>{chip((v.get(s) or {}).get('status'), lang)}</td>"
+                        for s in series[-4:]) + "</tr>"
+                for (repo, m), v in items)
+            d = out_path(lang, f"v/{sl}")
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "index.html").write_text(page(
+                lang, f"/v/{sl}/", f"{ven} — {TITLE}",
+                f'<h1>{html.escape(ven)}</h1>'
+                f'<p class="mut">{tt["r_modules"].format(n=len(items))} · '
+                f'<a href="{loc(lang, "/")}?vendor={urllib.parse.quote(ven)}">'
+                f'{tt["f_vendor"]}</a> · '
+                f'<a href="/feed/vendor/{sl}.xml">Atom</a></p>'
+                f'<table><tr><th>{tt["col_module"]}</th>{head_v}</tr>{rws}</table>',
+                f"{ven}: Odoo module compatibility.",
+                noindex=not items, feed=f"/feed/vendor/{sl}.xml"))
 
     # ---------- llms.txt (один, англійською, у корені) ----------
     # Формулювання залежить від наявності прогонів: заявляти «install runs»

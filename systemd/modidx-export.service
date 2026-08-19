@@ -6,6 +6,9 @@ Type=oneshot
 WorkingDirectory=/srv/modidx
 Environment=ROOT=/srv/modidx
 Environment=SITE_BASE=https://allservices.one
+# Зміни стану матеріалізуються ПЕРЕД генерацією: фіди читають state_changes,
+# і якби export ішов першим, кожен фід відставав би рівно на одну годину.
+ExecStartPre=/usr/bin/python3 /srv/modidx/indexer/changes.py
 ExecStart=/usr/bin/python3 /srv/modidx/indexer/export.py
 MemoryMax=700M
 Nice=10

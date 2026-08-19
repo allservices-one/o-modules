@@ -99,6 +99,52 @@ ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_module_id_state_key;
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_uniq ON jobs (module_id)
   WHERE state IN ('queued','running');
 
+-- Зміни стану модуля — джерело для Atom-фідів.
+--
+-- Подією є САМЕ ЗМІНА, а не прогін. Щоденний прохід дає ~4 000 прогонів на добу,
+-- і якби кожен ішов у фід, читати його було б неможливо. У фід іде лише те, що
+-- сталося вперше або відрізняється від попереднього разу.
+--
+-- `seeded` — записи першого проходу. Вони заповнюють базу мовчки: без цього
+-- перший же підписник отримав би 4 447 листів «новий: verified» і відписався.
+CREATE TABLE IF NOT EXISTS state_changes (
+  id         bigserial PRIMARY KEY,
+  module_id  bigint NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+  series     text NOT NULL,
+  state_old  text,
+  state_new  text NOT NULL,
+  status_old text,
+  status_new text,
+  run_id     bigint REFERENCES runs(id) ON DELETE SET NULL,
+  at         timestamptz NOT NULL,
+  seeded     boolean NOT NULL DEFAULT false,
+  UNIQUE (run_id)
+);
+CREATE INDEX IF NOT EXISTS state_changes_feed_idx ON state_changes (at DESC)
+  WHERE NOT seeded;
+CREATE INDEX IF NOT EXISTS state_changes_mod_idx ON state_changes (module_id, series, at DESC);
+
+-- Куди дійшли при матеріалізації змін. Одна колонка, один рядок: віконна
+-- функція по всій `runs` щогодини — марна робота, коли нових прогонів десяток.
+CREATE TABLE IF NOT EXISTS feed_cursor (
+  one          boolean PRIMARY KEY DEFAULT true CHECK (one),
+  last_run_id  bigint NOT NULL DEFAULT 0,
+  seeded_at    timestamptz
+);
+INSERT INTO feed_cursor (one) VALUES (true) ON CONFLICT DO NOTHING;
+
+-- Події екосистеми: поява й зникнення репозиторію, перша гілка серії.
+-- Інша аудиторія, ніж зміни стану модуля, тому окрема таблиця й окремий фід.
+CREATE TABLE IF NOT EXISTS eco_events (
+  id     bigserial PRIMARY KEY,
+  kind   text NOT NULL,          -- repo_added | repo_gone | branch_first
+  repo   text NOT NULL,
+  series text,
+  at     timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (kind, repo, series)
+);
+CREATE INDEX IF NOT EXISTS eco_events_at_idx ON eco_events (at DESC);
+
 -- Знімки для публічного лідерборда: історія цифр по серіях
 CREATE TABLE IF NOT EXISTS series_snapshots (
   taken_at    timestamptz NOT NULL DEFAULT now(),
