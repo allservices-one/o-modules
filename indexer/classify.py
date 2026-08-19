@@ -8,6 +8,26 @@ import re
 # Порядок має значення: перший збіг виграє.
 RULES = [
     # --- не вина модуля: інфраструктура ---
+    # Формулювання самого Odoo при незадоволеній external_dependencies. Це НЕ
+    # ModuleNotFoundError: Odoo ловить ImportError і піднімає власний
+    # MissingDependency, тому старе правило нижче їх не бачило — і всі такі
+    # прогони падали аж у "registry", тобто зараховувалися модулю як
+    # несумісність із версією. Спіймано 19.08.2026 на перших 113 прогонах:
+    # 5 падінь з 5 були саме цим (pandas, openupgradelib, cssselect).
+    # Джерело рядків — odoo/modules/module.py у самих образах 18.0 і 19.0:
+    #   18.0: f"External dependency {pydep} not installed: {e}"
+    #   19.0: "External dependency {dependency!r} not installed: %s"
+    #   обидва: 'Unable to find %r in path' для бінарників
+    ("env_missing_python",
+     r"External dependency ['\"]?([\w\.\-]+)['\"]? not installed",
+     "Немає зовнішнього python-пакета: {0}"),
+    ("env_missing_python", r"External dependency version mismatch: (\S+)",
+     "Версія зовнішнього python-пакета не підходить: {0}"),
+    ("env_missing_python",
+     r"external dependency is not met: ['\"]?([\w\.\-]+)",
+     "Незадоволена зовнішня залежність: {0}"),
+    ("env_binary", r"Unable to find ['\"]?([\w\.\-]+)['\"]? in path",
+     "Немає системної утиліти в образі: {0}"),
     ("env_missing_python", r"ModuleNotFoundError: No module named '([\w\.]+)'",
      "Немає зовнішнього python-пакета: {0}"),
     ("env_missing_python", r"Unmet external Python dependencies?:?\s*(.+)",
