@@ -17,6 +17,12 @@ BATCH = int(os.environ.get("BATCH", "1"))
 TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "420"))
 MEM = os.environ.get("RUN_MEM", "2g")
 PGPASS = _password()
+# Пароль передаємо в docker ЧЕРЕЗ ОТОЧЕННЯ, а не в argv. Форма `-e ІМʼЯ` без
+# значення каже docker узяти змінну з оточення клієнта. Раніше було
+# `-e PASSWORD=<пароль>` — і пароль світився в `ps`, `systemctl status`,
+# journald та в будь-якому виводі, який хтось скопіює в публічний ops/.
+# Репозиторій публічний, тому це не гігієна, а вимога.
+CHILD_ENV = dict(os.environ, PASSWORD=PGPASS, PGPASSWORD=PGPASS)
 IDLE_SLEEP = int(os.environ.get("IDLE_SLEEP", "30"))
 # Скільки задача може висіти в running, перш ніж вважати воркера мертвим.
 # Має бути помітно більше за RUN_TIMEOUT, інакше живий батч заберуть із-під нього.
@@ -32,10 +38,10 @@ def tmpl(series):
 
 def psql(sql, db="postgres"):
     return subprocess.run(
-        ["docker", "exec", "-i", "-e", f"PGPASSWORD={PGPASS}", "modidx-pg",
+        ["docker", "exec", "-i", "-e", "PGPASSWORD", "modidx-pg",
          "psql", "-U", "odoo", "-d", db, "-v", "ON_ERROR_STOP=1",
          "-t", "-A", "-F", "|", "-c", sql],
-        capture_output=True, text=True, timeout=120)
+        capture_output=True, text=True, timeout=120, env=CHILD_ENV)
 
 
 def run_install(series, modules, dbname):
@@ -59,7 +65,7 @@ def run_install(series, modules, dbname):
         # Параметри БД — тільки через env. Entrypoint образу дописує DB_ARGS з env
         # у кінець команди (exec odoo "$@" "${DB_ARGS[@]}"), тому флаги --db_host
         # і --db_password перебиваються дефолтами 'db' та 'odoo'. Див. mktemplate.sh.
-        "-e", "HOST=pg", "-e", "PORT=5432", "-e", "USER=odoo", "-e", f"PASSWORD={PGPASS}",
+        "-e", "HOST=pg", "-e", "PORT=5432", "-e", "USER=odoo", "-e", "PASSWORD",
         f"odoo:{series}", "odoo",
         "-d", dbname,
         "--addons-path=/mnt/pool,/usr/lib/python3/dist-packages/odoo/addons",
@@ -68,7 +74,8 @@ def run_install(series, modules, dbname):
         "--max-cron-threads=0", "--log-level=warn", "--limit-time-real", str(TIMEOUT - 30),
     ]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT,
+                           env=CHILD_ENV)
         log = (p.stdout or "") + (p.stderr or "")
         return p.returncode, log, False, int((time.time() - t0) * 1000)
     except subprocess.TimeoutExpired as e:

@@ -7,7 +7,10 @@ ROOT="${ROOT:-/srv/modidx}"
 cd "$ROOT"; set -a; . ./.env; set +a
 TMPL="tmpl_$(echo "$S" | tr -d '.')"
 
-psql(){ docker exec -i -e PGPASSWORD="$PGPASSWORD" modidx-pg psql -U odoo -d postgres -v ON_ERROR_STOP=1 "$@"; }
+export PGPASSWORD PASSWORD="$PGPASSWORD"
+# `-e ІМʼЯ` без значення: docker бере змінну з оточення, і пароль не потрапляє
+# в argv, тобто не світиться в ps, systemctl status і journald.
+psql(){ docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d postgres -v ON_ERROR_STOP=1 "$@"; }
 
 if psql -tAc "SELECT 1 FROM pg_database WHERE datname='$TMPL'" | grep -q 1; then
   echo "  $TMPL уже існує"; exit 0
@@ -22,7 +25,7 @@ psql -c "CREATE DATABASE ${TMPL}_build"
 # Тобто будь-який наш --db_host / --db_password перебивається. Перевірено 19.08.2026:
 # з флагами падало на 'could not translate host name "db"'.
 docker run --rm --network modidx --memory=2g \
-  -e HOST=pg -e PORT=5432 -e USER=odoo -e PASSWORD="$PGPASSWORD" \
+  -e HOST=pg -e PORT=5432 -e USER=odoo -e PASSWORD \
   "odoo:$S" odoo \
     -d "${TMPL}_build" \
     -i base --without-demo=all --stop-after-init --no-http \
