@@ -24,6 +24,7 @@ RUNNABLE = ("pending", "verified")
 LABELS = {
     "verified":        ("Перевірено прогоном",        "Verified by install run"),
     "pending":         ("Прогін заплановано",         "Run pending"),
+    "out_of_scope":    ("Серія не тестується",        "Series not covered"),
     "not_installable": ("Не встановлюваний за манифестом", "Not installable by manifest"),
     "not_verifiable":  ("Перевірити неможливо",       "Cannot be verified"),
     "absent":          ("Немає в цій серії",          "Not in this series"),
@@ -48,6 +49,11 @@ def derive_state(row):
     """
     if row.get("absent"):
         return "absent", None
+    # Серія, яку харнес не проганяє взагалі (16.0, 17.0 — чекаутів немає).
+    # Показати їх як «прогін заплановано» було б неправдою: нічого не
+    # заплановано, і в жоден знаменник вони не входять.
+    if row.get("in_scope") is False:
+        return "out_of_scope", None
     if row.get("availability") == "store_paid":
         return "not_verifiable", None
     if row.get("installable") is False:

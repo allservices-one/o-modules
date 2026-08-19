@@ -18,9 +18,11 @@
 Візуальна мова — версійні чипи і власний знак. У підвалі кожної сторінки
 стоїть дисклеймер про непов'язаність із Odoo S.A. та OCA.
 """
-import csv, html, json, os, pathlib, shutil, subprocess, sys, datetime
+import csv, html, json, os, pathlib, shutil, subprocess, sys, urllib.parse, datetime
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT
+from state import derive_state, label as state_label, breakdown
+from db import SERIES as TESTED_SERIES
 
 SITE = ROOT / "var" / "site"
 NOW = datetime.datetime.now(datetime.timezone.utc)
@@ -40,6 +42,11 @@ V19_RELEASED = datetime.date(2025, 9, 1)         # для «N місяців п�
 STATUS_CLS = {
     "ok": ("✓", "good"), "warn": ("!", "warning"), "dep": ("▲", "serious"),
     "env": ("~", "muted"), "fail": ("✗", "critical"), "timeout": ("⏱", "critical"),
+    # Похідні стани (indexer/state.py). Жоден не є помилкою модуля, тому
+    # критичної палітри тут немає: not_installable — це намір автора
+    # (метапакет, залишок _unported), а не поломка.
+    "pending": ("·", "muted"), "not_installable": ("◌", "muted"),
+    "not_verifiable": ("?", "muted"),
     None: ("—", "muted"),
 }
 
@@ -78,7 +85,17 @@ T = {
         "status_h": "Install status on {s}",
         "tested": "Tested {n} of {m} modules.",
         "modules_h": "Modules", "col_module": "Module",
-        "showing": 'Showing the first 300. Full list in the <a href="{dataset}">dataset</a>.',
+        "showing": 'Full list also in the <a href="{dataset}">dataset</a>.',
+        "f_cat": "Category", "f_vendor": "Vendor", "f_state": "State",
+        "f_series": "Series", "f_any": "any", "f_clear": "Clear filters",
+        "f_group": "Group by category", "f_shown": "Showing {n} of {m}",
+        "f_none": "Nothing matches these filters.",
+        "col_vendor": "Vendor", "col_cat": "Category", "col_repo": "Repository",
+        "sort_hint": "Click a header to sort",
+        "f_link": "This selection is a link — copy the address bar to share it.",
+        "denom": "{ok} of {ver} tested modules on {s} install cleanly ({pct}%). "
+                 "Runnable: {run} of {total} — {noninst} not installable by "
+                 "manifest, {pending} still pending.",
         "m_series": "Series", "m_status": "Status", "m_details": "Details",
         "m_nobranch": "no branch", "m_run": "run {d}", "m_log": "Install log {s}",
         "m_source": "source on GitHub", "m_in": "in",
@@ -130,7 +147,17 @@ T = {
         "status_h": "Статус install на {s}",
         "tested": "Протестовано {n} з {m} модулів.",
         "modules_h": "Модулі", "col_module": "Модуль",
-        "showing": 'Показано перші 300. Повний перелік — у <a href="{dataset}">датасеті</a>.',
+        "showing": 'Повний перелік також у <a href="{dataset}">датасеті</a>.',
+        "f_cat": "Категорія", "f_vendor": "Вендор", "f_state": "Стан",
+        "f_series": "Серія", "f_any": "будь-яка", "f_clear": "Скинути фільтри",
+        "f_group": "Групувати за категорією", "f_shown": "Показано {n} з {m}",
+        "f_none": "За цими фільтрами нічого немає.",
+        "col_vendor": "Вендор", "col_cat": "Категорія", "col_repo": "Репозиторій",
+        "sort_hint": "Клік на заголовку — сортування",
+        "f_link": "Цей відбір — посилання: скопіюйте адресний рядок, щоб поділитися.",
+        "denom": "{ok} з {ver} перевірених модулів на {s} встановлюються чисто "
+                 "({pct}%). Прогонабельних: {run} з {total} — {noninst} не "
+                 "встановлювані за манифестом, {pending} ще чекають прогону.",
         "m_series": "Серія", "m_status": "Статус", "m_details": "Деталі",
         "m_nobranch": "гілки немає", "m_run": "прогін {d}", "m_log": "Лог прогону {s}",
         "m_source": "джерело на GitHub", "m_in": "у",
@@ -233,6 +260,25 @@ pre{background:var(--l);padding:11px 13px;border-radius:7px;overflow-x:auto;
 font:11.5px/1.6 ui-monospace,Menlo,monospace;color:var(--i2)}
 input{width:100%;padding:11px 13px;font-size:14px;border:1px solid var(--ax);border-radius:7px;
 background:var(--s);color:var(--i)}
+/* Панель відбору. Мультиколонковий grid, щоб на телефоні лягало в стовпчик
+   без медіазапиту. */
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+gap:9px;align-items:end;margin:14px 0 10px}
+.filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;
+text-transform:uppercase;letter-spacing:.05em;color:var(--m)}
+.filters select,.filters button{padding:9px 11px;font-size:13.5px;border-radius:7px;
+border:1px solid var(--ax);background:var(--s);color:var(--i)}
+.filters button{cursor:pointer;text-transform:none;letter-spacing:0}
+.filters .cb{flex-direction:row;align-items:center;gap:7px;text-transform:none;
+letter-spacing:0;font-size:13.5px;color:var(--i)}
+.filters .cb input{width:auto}
+/* Напрямок сортування — стрілкою і aria-sort, НЕ кольором: інакше для
+   дальтоніка стан колонки нерозрізненний. */
+th[data-sort]{cursor:pointer;user-select:none}
+th[data-sort]:focus-visible{outline:2px solid var(--good);outline-offset:-2px}
+th[data-arrow]:not([data-arrow=""])::after{content:" " attr(data-arrow);font-weight:700}
+tr.grp td{background:var(--l);font-weight:600;font-size:12px;
+text-transform:uppercase;letter-spacing:.04em;color:var(--m)}
 .bar{display:flex;gap:2px;height:26px;border-radius:5px;overflow:hidden;margin:10px 0 6px}
 .bar div{display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;
 color:#fff;min-width:2px}
@@ -264,9 +310,24 @@ def out_path(lang, rel):
 
 
 def st_label(status, lang):
+    if status in ("pending", "not_installable", "not_verifiable"):
+        return state_label(status, lang)
     key = {"ok": "st_ok", "warn": "st_warn", "dep": "st_dep", "env": "st_env",
            "fail": "st_fail", "timeout": "st_timeout"}.get(status, "st_none")
     return T[lang][key]
+
+
+def cell_state(row):
+    """Що показати в клітинці серії: код для чипа + похідний стан для фільтра.
+
+    Верифікований модуль показує РЕЗУЛЬТАТ прогону, решта — причину, чому
+    прогону немає. Обидва коди їдуть у modules.json, бо фільтр «стан» і
+    фільтр «статус» — це різні питання, і зводити їх в одне поле означало б
+    повторити помилку, від якої трьохвісна модель і захищає.
+    """
+    row = dict(row, in_scope=row["series"] in TESTED_SERIES)
+    st, status = derive_state(row)
+    return {"k": status if st == "verified" else st, "e": st}
 
 
 def chip(status, lang):
@@ -334,6 +395,18 @@ def status_json(conn):
     last_harvest, method = row.get("taken_at"), row.get("method")
     cur.execute("SELECT status, count(*) c FROM latest_runs GROUP BY 1 ORDER BY 1")
     by_status = {r["status"]: r["c"] for r in cur.fetchall()}
+    # Розклад станів по серіях — щоб сесія без SSH бачила не лише «скільки
+    # прогонів», а й знаменник, від якого рахується публічний відсоток.
+    cur.execute("""
+        SELECT m.series, m.availability, m.installable, r.status
+        FROM modules m LEFT JOIN latest_runs r ON r.module_id = m.id
+    """)
+    per_series = {}
+    for row in cur.fetchall():
+        s = row["series"]
+        per_series.setdefault(s, []).append(
+            dict(row, in_scope=s in TESTED_SERIES))
+    states = {s: breakdown(rows) for s, rows in sorted(per_series.items())}
     cur.execute("SELECT state, count(*) c FROM jobs GROUP BY 1 ORDER BY 1")
     queue = {r["state"]: r["c"] for r in cur.fetchall()}
     cur.execute("SELECT count(*) c FROM modules")
@@ -372,6 +445,9 @@ def status_json(conn):
             "tested": sum(by_status.values()),
             "total_modules": total_modules,
         },
+        # Три вісі не згортаємо в одну цифру: not_installable і not_verifiable
+        # не входять у runnable, тобто у знаменник відсотка встановлюваності.
+        "states": states,
         "queue": {k: queue.get(k, 0) for k in ("queued", "running", "error")},
         "images": images,
         "disk_free_gb": round(du.free / 1024**3, 1),
@@ -386,7 +462,10 @@ def fetch(conn):
     cur = conn.cursor()
     cur.execute("""
       SELECT m.repo, m.module, m.series, m.head_sha, m.last_commit,
-             r.status, r.cause, r.detail, r.log_tail, r.created_at AS run_at, r.duration_ms
+             m.availability, m.installable, m.category, m.vendors, m.is_oca,
+             m.license, m.summary, m.manifest_version, m.auto_install, m.application,
+             r.status, r.cause, r.detail, r.log_tail, r.created_at AS run_at,
+             r.duration_ms, r.latest_version
       FROM modules m
       LEFT JOIN latest_runs r ON r.module_id = m.id
       ORDER BY m.repo, m.module, m.series
@@ -397,10 +476,175 @@ def fetch(conn):
     return rows, series
 
 
-def home(lang, series, mods, present, ported, gap, counts, tested, repos_next):
+def browse_js(lang, shown_series):
+    """Клієнтський браузер модулів: фільтри, сортування, групування, вікно.
+
+    Три рішення, кожне не косметичне:
+
+    * **Фільтри в URL.** Будь-який відбір стає посиланням, яке можна кинути в
+      тред OCA: «ось усі ваші зламані модулі в account на 19.0». Для плану
+      публікації це цінніше за сам фільтр.
+    * **Віконна відмальовка.** 4,5 тис. рядків у DOM помітно гальмують на
+      телефоні; малюємо ~200 і додаємо при скролі.
+    * **Стан не кольором.** Статус лишається іконкою з підписом, напрямок
+      сортування — стрілкою і `aria-sort`, а не відтінком. Інакше `env` і
+      `fail` для дальтоніка нерозрізненні.
+    """
+    pfx = "" if lang == DEFAULT_LANG else "/uk"
+    t = T[lang]
+    return """
+const PFX=%(pfx)s, SER=%(ser)s, CH=%(ch)s, SL=%(sl)s;
+const T=%(tt)s;
+const $=s=>document.querySelector(s), tb=$('#tbl tbody');
+let DATA=null, view=[], sortKey='m', sortDir=1, drawn=0, group=false;
+
+const P=new URLSearchParams(location.search);
+const F={cat:P.get('cat')||'', vendor:P.get('vendor')||'', state:P.get('state')||'',
+         series:P.get('series')||'', q:P.get('q')||''};
+group = P.get('group')==='1';
+if(P.get('sort')){ const [k,d]=P.get('sort').split(':'); sortKey=k; sortDir=d==='desc'?-1:1; }
+
+function syncURL(){
+  const u=new URLSearchParams();
+  for(const k of ['cat','vendor','state','series','q']) if(F[k]) u.set(k,F[k]);
+  if(group) u.set('group','1');
+  if(sortKey!=='m'||sortDir!==1) u.set('sort',sortKey+':'+(sortDir<0?'desc':'asc'));
+  const qs=u.toString();
+  history.replaceState(null,'',qs?location.pathname+'?'+qs:location.pathname);
+}
+
+function cell(r,i){ const st=r.s[i]; if(!st) return '<td></td>';
+  return '<td>'+(CH[st.k||'']||'')+'</td>'; }
+
+function rowHTML(r){
+  return '<tr><td><a href="'+PFX+'/m/'+r.r+'/'+r.m+'/">'+r.m+'</a> '
+    +'<span class="mut">'+r.r+'</span></td>'
+    +'<td class="mut">'+(r.v||[]).join(', ')+'</td>'
+    +'<td class="mut">'+(r.c||'')+'</td>'
+    +SER.map((_,i)=>cell(r,i)).join('')+'</tr>';
+}
+
+function apply(){
+  const q=F.q.trim().toLowerCase();
+  view=DATA.filter(r=>{
+    if(q && !(r.m.includes(q)||r.r.includes(q))) return false;
+    if(F.cat && (r.c||'')!==F.cat) return false;
+    if(F.vendor && !(r.v||[]).includes(F.vendor)) return false;
+    if(F.series){ const i=SER.indexOf(F.series); if(i<0||!r.s[i]) return false; }
+    if(F.state){
+      const idx=F.series?[SER.indexOf(F.series)]:SER.map((_,i)=>i);
+      if(!idx.some(i=>r.s[i]&&(r.s[i].k===F.state||r.s[i].e===F.state))) return false;
+    }
+    return true;
+  });
+  const key=r=>sortKey==='m'?r.m:sortKey==='v'?((r.v||[])[0]||'\uffff')
+    :sortKey==='c'?(r.c||'\uffff')
+    :((r.s[+sortKey.slice(1)]||{}).k||'\uffff');
+  view.sort((a,b)=>{const x=key(a),y=key(b);return x<y?-sortDir:x>y?sortDir:0;});
+  $('#shown').textContent=T.shown.replace('{n}',view.length).replace('{m}',DATA.length);
+  tb.innerHTML=''; drawn=0;
+  if(!view.length){ tb.innerHTML='<tr><td colspan="'+(3+SER.length)+'" class="mut">'+T.none+'</td></tr>'; }
+  else draw();
+  syncURL();
+}
+
+function draw(){
+  if(drawn>=view.length) return;
+  const slice=view.slice(drawn,drawn+200);
+  let html='';
+  if(group){
+    let last=drawn>0?(view[drawn-1].c||''):null;
+    for(const r of slice){
+      const c=r.c||'';
+      if(c!==last){ html+='<tr class="grp"><td colspan="'+(3+SER.length)+'">'+(c||'—')+'</td></tr>'; last=c; }
+      html+=rowHTML(r);
+    }
+  } else html=slice.map(rowHTML).join('');
+  tb.insertAdjacentHTML('beforeend',html);
+  drawn+=slice.length;
+}
+
+addEventListener('scroll',()=>{
+  if(innerHeight+scrollY>document.body.offsetHeight-600) draw();
+},{passive:true});
+
+function fill(sel,vals,cur){
+  const el=$(sel);
+  for(const v of vals){ const o=document.createElement('option');
+    o.value=v; o.textContent=v; if(v===cur) o.selected=true; el.appendChild(o); }
+}
+
+(async()=>{
+  DATA=await (await fetch(PFX?'/modules.json':'modules.json')).json();
+  fill('#f-cat',[...new Set(DATA.map(r=>r.c).filter(Boolean))].sort(),F.cat);
+  fill('#f-vendor',[...new Set(DATA.flatMap(r=>r.v||[]))].sort(),F.vendor);
+  fill('#f-series',SER,F.series);
+  const states=new Set();
+  DATA.forEach(r=>r.s.forEach(x=>x&&states.add(x.k)));
+  const el=$('#f-state');
+  [...states].sort().forEach(k=>{const o=document.createElement('option');
+    o.value=k; o.textContent=SL[k]||k; if(k===F.state)o.selected=true; el.appendChild(o);});
+  $('#q').value=F.q; $('#f-group').checked=group;
+  markSort();
+  apply();
+})();
+
+$('#q').addEventListener('input',e=>{F.q=e.target.value;apply();});
+for(const [id,k] of [['#f-cat','cat'],['#f-vendor','vendor'],['#f-state','state'],['#f-series','series']])
+  $(id).addEventListener('change',e=>{F[k]=e.target.value;apply();});
+$('#f-group').addEventListener('change',e=>{group=e.target.checked;apply();});
+$('#f-clear').addEventListener('click',()=>{
+  for(const k of ['cat','vendor','state','series','q']) F[k]='';
+  group=false; $('#q').value=''; $('#f-group').checked=false;
+  document.querySelectorAll('.filters select').forEach(s=>s.value='');
+  apply();
+});
+
+function markSort(){
+  document.querySelectorAll('#tbl th[data-sort]').forEach(th=>{
+    const on=th.dataset.sort===sortKey;
+    th.setAttribute('aria-sort',on?(sortDir<0?'descending':'ascending'):'none');
+    th.dataset.arrow=on?(sortDir<0?'\u2193':'\u2191'):'';
+  });
+}
+document.querySelectorAll('#tbl th[data-sort]').forEach(th=>{
+  const go=()=>{ const k=th.dataset.sort;
+    if(k===sortKey) sortDir=-sortDir; else {sortKey=k;sortDir=1;}
+    markSort(); apply(); };
+  th.addEventListener('click',go);
+  th.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go();}});
+});
+""" % {
+        "pfx": json.dumps(pfx),
+        "ser": json.dumps(shown_series),
+        "ch": json.dumps({k or "": chip(k, lang) for k in STATUS_CLS}, ensure_ascii=False),
+        "sl": json.dumps({k: state_label(k, lang) for k in
+                          ("verified", "pending", "not_installable",
+                           "not_verifiable", "absent")}, ensure_ascii=False),
+        "tt": json.dumps({"shown": t["f_shown"], "none": t["f_none"]}, ensure_ascii=False),
+    }
+
+
+def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd):
     t = T[lang]
     newest = series[-1]
     prev = series[-2] if len(series) > 1 else None
+
+    # Кожен опублікований відсоток НАЗИВАЄ свій знаменник. Не «71%
+    # встановлюється», а «71% з 1 043 прогонабельних (з 1 192 усього: 149 не
+    # встановлювані за манифестом, 800 чекають прогону)». Без цього показник
+    # поїде разом із кількістю метапакетів, які до сумісності стосунку не мають,
+    # і перший уважний читач зловить нас на арифметиці.
+    ok = counts.get("ok", 0)
+    verified = sum(c for s, c in counts.items() if s)
+    denom_line = (
+        t["denom"].format(
+            ok=ok, ver=verified,
+            pct=f"{ok / verified * 100:.0f}" if verified else "—",
+            run=bd.get("runnable", 0), s=newest, total=bd.get("total", 0),
+            noninst=bd.get("not_installable", 0), pending=bd.get("pending", 0))
+        if verified else
+        t["tested"].format(n=tested, m=len(mods)))
 
     tiles = "".join(
         f'<div class="t"><div class="k">{t["tile_modules_on"].format(s=s)}</div>'
@@ -444,14 +688,15 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next):
         prev=prev, new=newest, months=months, zero=zero)
 
     chips = " ".join(f'<span class="vchip">{s}</span>' for s in series)
-    head = "".join(f"<th>{s}</th>" for s in series[-4:])
-    rowsh = []
-    for (repo, mod), v in sorted(mods.items())[:300]:
-        cells = "".join(f"<td>{chip((v.get(s) or {}).get('status'), lang)}</td>" for s in series[-4:])
-        rowsh.append(f'<tr><td><a href="{loc(lang, f"/m/{repo}/{mod}/")}">{mod}</a> '
-                     f'<span class="mut">{repo}</span></td>{cells}</tr>')
 
-    chipmap = json.dumps({(k or ""): chip(k, lang) for k in STATUS_CLS}, ensure_ascii=False)
+    # Таблиця модулів рендериться клієнтом з одного JSON: 4,5 тис. рядків це
+    # ~350 КБ, які Caddy віддає стисненими, і браузер жує їх не помічаючи.
+    # Серверного пошуку тут не буде ніколи — це рівно та частина, що робить
+    # проєкт безкоштовним в обслуговуванні.
+    shown_series = series[-4:]
+    head = "".join(
+        f'<th data-sort="s{i}" tabindex="0" aria-sort="none">{s}</th>'
+        for i, s in enumerate(shown_series))
     body = f"""<h1>{t['h1']}</h1>
 <p class="lead">{t['sub']}</p>
 <p>{chips}</p>
@@ -465,23 +710,31 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next):
 <h2>{bar_h}</h2>
 <div class="bar">{seg}</div>
 <div class="lg">{leg}</div>
-<p class="mut">{t['tested'].format(n=tested, m=len(mods))}</p>
+<p class="mut">{denom_line}</p>
+
 <h2>{t['modules_h']}</h2>
-<input id="q" placeholder="{t['search']}" autocomplete="off">
-<table id="tbl"><tr><th>{t['col_module']}</th>{head}</tr>{''.join(rowsh)}</table>
-<p class="mut">{t['showing'].format(dataset=loc(lang, '/data/'))}</p>
+<div class="filters">
+  <input id="q" placeholder="{t['search']}" autocomplete="off" aria-label="{t['search']}">
+  <label>{t['f_cat']} <select id="f-cat"><option value="">{t['f_any']}</option></select></label>
+  <label>{t['f_vendor']} <select id="f-vendor"><option value="">{t['f_any']}</option></select></label>
+  <label>{t['f_state']} <select id="f-state"><option value="">{t['f_any']}</option></select></label>
+  <label>{t['f_series']} <select id="f-series"><option value="">{t['f_any']}</option></select></label>
+  <label class="cb"><input type="checkbox" id="f-group"> {t['f_group']}</label>
+  <button type="button" id="f-clear">{t['f_clear']}</button>
+</div>
+<p class="mut" id="shown" aria-live="polite"></p>
+<table id="tbl">
+  <thead><tr>
+    <th data-sort="m" tabindex="0" aria-sort="none">{t['col_module']}</th>
+    <th data-sort="v" tabindex="0" aria-sort="none">{t['col_vendor']}</th>
+    <th data-sort="c" tabindex="0" aria-sort="none">{t['col_cat']}</th>
+    {head}
+  </tr></thead>
+  <tbody></tbody>
+</table>
+<p class="mut">{t['showing'].format(dataset=loc(lang, '/data/'))} {t['f_link']}</p>
 <script>
-const CH={chipmap}, PFX="{'' if lang == DEFAULT_LANG else '/uk'}";
-let idx=null;
-document.getElementById('q').addEventListener('input',async e=>{{
-  const q=e.target.value.trim().toLowerCase();
-  if(!idx) idx=await (await fetch('/modules.json')).json();
-  const hits=q?idx.filter(m=>m.m.includes(q)||m.r.includes(q)).slice(0,300):idx.slice(0,300);
-  document.getElementById('tbl').innerHTML=
-    '<tr><th>{t['col_module']}</th>{head}</tr>'+hits.map(m=>
-    '<tr><td><a href="'+PFX+'/m/'+m.r+'/'+m.m+'/">'+m.m+'</a> <span class="mut">'+m.r+'</span></td>'+
-    m.s.map(x=>'<td>'+(CH[x||""]||"")+'</td>').join('')+'</tr>').join('');
-}});
+{browse_js(lang, shown_series)}
 </script>"""
     return page(lang, "/", f"{TITLE} — {t['h1']}", body,
                 t["sub"][:180])
@@ -511,6 +764,10 @@ def build():
         counts[st] = counts.get(st, 0) + 1
     tested = sum(c for s, c in counts.items() if s)
     repos_next = len({r for (r, _), v in mods.items() if NEXT_SERIES in v})
+    # Знаменник рахуємо ТІЛЬКИ по модулях, які взагалі є в найновішій серії:
+    # «не перенесено» і «не встановлюється» — різні твердження.
+    bd = breakdown([dict(v[newest], in_scope=newest in TESTED_SERIES)
+                    for v in mods.values() if newest in v])
 
     for lang in LANGS:
         out_path(lang, "data").mkdir(parents=True, exist_ok=True)
@@ -518,7 +775,7 @@ def build():
     # ---------- головна ----------
     for lang in LANGS:
         out_path(lang, "index.html").write_text(
-            home(lang, series, mods, present, ported, gap, counts, tested, repos_next))
+            home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd))
 
     # ---------- сторінки модулів ----------
     search = []
@@ -534,11 +791,21 @@ def build():
                                  f"<td>{chip(None, lang)}</td>"
                                  f"<td class='mut'>{t['m_nobranch']}</td></tr>")
                     continue
-                when = r["run_at"].strftime("%Y-%m-%d") if r.get("run_at") else "—"
-                det = html.escape(r.get("detail") or "")
+                # Показуємо ПОХІДНИЙ стан, а не сирий статус: інакше модуль,
+                # який ми свідомо не запускаємо, виглядав би «не протестованим»,
+                # хоча причина відома й записана в його ж манифесті.
+                st, status = derive_state(dict(r, in_scope=s in TESTED_SERIES))
+                if st == "verified":
+                    when = r["run_at"].strftime("%Y-%m-%d") if r.get("run_at") else "—"
+                    det = html.escape(r.get("detail") or "")
+                    ver = r.get("latest_version")
+                    extra = f" <span class='mut'>· {html.escape(ver)}</span>" if ver else ""
+                    note = f"{det} <span class='mut'>· {t['m_run'].format(d=when)}</span>{extra}"
+                else:
+                    note = f"<span class='mut'>{state_label(st, lang)}</span>"
                 cells.append(f'<tr><td><span class="vchip">{s}</span></td>'
-                             f"<td>{chip(r.get('status'), lang)}</td>"
-                             f"<td>{det} <span class='mut'>· {t['m_run'].format(d=when)}</span></td></tr>")
+                             f"<td>{chip(status if st == 'verified' else st, lang)}</td>"
+                             f"<td>{note}</td></tr>")
             logs = ""
             for s in reversed(series):
                 r = v.get(s) or {}
@@ -546,9 +813,27 @@ def build():
                     logs = (f"<h2>{t['m_log'].format(s=s)}</h2>"
                             f"<pre>{html.escape(r['log_tail'])}</pre>")
                     break
+            meta = next((v[s] for s in reversed(series)
+                         if s in v and v[s].get("manifest_version")), {})
+            facts = ""
+            if meta.get("summary"):
+                facts += f'<p class="lead">{html.escape(meta["summary"])}</p>'
+            bits = []
+            if meta.get("category"):
+                bits.append(f'{t["f_cat"]}: <a href="{loc(lang, "/")}?cat='
+                            f'{urllib.parse.quote(meta["category"])}">'
+                            f'{html.escape(meta["category"])}</a>')
+            for ven in (meta.get("vendors") or [])[:4]:
+                bits.append(f'<a href="{loc(lang, "/")}?vendor='
+                            f'{urllib.parse.quote(ven)}">{html.escape(ven)}</a>')
+            if meta.get("license"):
+                bits.append(html.escape(meta["license"]))
+            if bits:
+                facts += f'<p class="mut">{" · ".join(bits)}</p>'
             b = (f'<h1>{mod}</h1><p class="mut">{t["m_in"]} '
                  f'<a href="{loc(lang, f"/r/{repo}/")}">{repo}</a> · '
                  f'<a href="https://github.com/OCA/{repo}">{t["m_source"]}</a></p>'
+                 f'{facts}'
                  f'<table><tr><th>{t["m_series"]}</th><th>{t["m_status"]}</th>'
                  f'<th>{t["m_details"]}</th></tr>{"".join(cells)}</table>{logs}')
             ld = {"@context": "https://schema.org", "@type": "SoftwareSourceCode",
@@ -564,8 +849,19 @@ def build():
                     else f"Чи встановлюється модуль {mod} з {repo} на версії Odoo.")
             (d / "index.html").write_text(
                 page(lang, f"/m/{repo}/{mod}/", title, b, desc, ld, noindex=not has_status))
-        search.append({"r": repo, "m": mod,
-                       "s": [(v.get(s) or {}).get("status") for s in series[-4:]]})
+        # Метадані є лише там, де є чекаут (18.0/19.0). Беремо найновішу
+        # серію, у якій манифест реально розібрано, інакше картка модуля
+        # виглядала б порожньою через те, що першою трапилась 16.0.
+        any_row = next((v[s] for s in reversed(series)
+                        if s in v and v[s].get("manifest_version")), {})
+        if not any_row:
+            any_row = next((v[s] for s in reversed(series) if s in v), {})
+        search.append({
+            "r": repo, "m": mod,
+            "c": any_row.get("category") or "",
+            "v": list(any_row.get("vendors") or []),
+            "s": [cell_state(v[s]) if s in v else None for s in series[-4:]],
+        })
 
     # мовно-нейтральний індекс пошуку: коди статусів, підписи рендерить сторінка
     (SITE / "modules.json").write_text(
@@ -599,13 +895,36 @@ def build():
     # ---------- датасет ----------
     with open(SITE / "data" / "modules.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["repo", "module"] + [f"{s}_present" for s in series]
-                   + [f"{s}_status" for s in series] + [f"{s}_cause" for s in series])
+        # У датасеті поруч і сирі вісі, і похідний стан: сирі — щоб можна було
+        # перерахувати по-своєму, похідний — щоб цифри збігалися з сайтом.
+        w.writerow(["repo", "module", "category", "vendors", "license", "is_oca"]
+                   + [f"{s}_present" for s in series]
+                   + [f"{s}_state" for s in series]
+                   + [f"{s}_status" for s in series]
+                   + [f"{s}_cause" for s in series]
+                   + [f"{s}_installable" for s in series]
+                   + [f"{s}_version" for s in series])
         for (repo, mod), v in sorted(mods.items()):
-            w.writerow([repo, mod]
+            meta = next((v[s] for s in reversed(series)
+                         if s in v and v[s].get("manifest_version")), {}) \
+                or next((v[s] for s in reversed(series) if s in v), {})
+
+            def st_of(s):
+                if s not in v:
+                    return ""
+                return derive_state(dict(v[s], in_scope=s in TESTED_SERIES))[0]
+
+            w.writerow([repo, mod, meta.get("category") or "",
+                        ";".join(meta.get("vendors") or []),
+                        meta.get("license") or "",
+                        "" if meta.get("is_oca") is None else int(meta["is_oca"])]
                        + [1 if s in v else 0 for s in series]
+                       + [st_of(s) for s in series]
                        + [(v.get(s) or {}).get("status") or "" for s in series]
-                       + [(v.get(s) or {}).get("cause") or "" for s in series])
+                       + [(v.get(s) or {}).get("cause") or "" for s in series]
+                       + ["" if (v.get(s) or {}).get("installable") is None
+                          else int(v[s]["installable"]) for s in series]
+                       + [(v.get(s) or {}).get("latest_version") or "" for s in series])
     for lang in LANGS:
         t = T[lang]
         out_path(lang, "data").mkdir(parents=True, exist_ok=True)
