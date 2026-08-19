@@ -21,6 +21,15 @@ def main():
           FROM modules m
           LEFT JOIN latest_runs r ON r.module_id = m.id
           WHERE m.series = %s
+            -- installable=false — модуль САМ заявляє, що не встановлюється:
+            -- метапакет, залишок _unported, оболонка для депрекації. Ставити
+            -- його в чергу означає витратити прогін, щоб дізнатися те, що вже
+            -- написано в манифесті, і отримати env, який не є інформацією.
+            -- NULL тут ЗАЛИШАЄМО в черзі: це «манифест ще не розібрано»,
+            -- а не «не встановлюваний» — плутати ці стани не можна.
+            AND m.installable IS DISTINCT FROM false
+            -- прогонабельна лише те, що ми можемо дістати
+            AND m.availability = 'open_source'
             AND (r.id IS NULL OR r.head_sha IS DISTINCT FROM m.head_sha)
             AND NOT EXISTS (
               SELECT 1 FROM jobs j

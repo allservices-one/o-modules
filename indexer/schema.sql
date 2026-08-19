@@ -12,6 +12,41 @@ CREATE TABLE IF NOT EXISTS modules (
 );
 CREATE INDEX IF NOT EXISTS modules_series_idx ON modules (series);
 
+-- ── Три незалежні вісі (ops/inbox/0010) ──────────────────────────────────────
+-- Кожна відповідає на СВОЄ питання, і змішувати їх в одну колонку не можна:
+--   availability — чи можемо ми модуль дістати       (наша спроможність)
+--   installable  — чи заявляє сам модуль, що ставиться (факт із манифеста)
+--   runs.status  — що сталося, коли ми запустили      (результат прогону)
+-- Модуль з installable=false цілком ДОСТУПНИЙ (код у git), просто ми свідомо
+-- його не запускаємо. Записати йому env або «не протестовано» було б брехнею
+-- в обидві сторони: у OCA це метапакети, залишки _unported і оболонки для
+-- депрекації, тобто навмисна властивість, а не поломка.
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS availability text NOT NULL DEFAULT 'open_source';
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS installable boolean;   -- NULL = чекауту немає, не знаємо
+
+-- ── Метадані з __manifest__.py (indexer/manifests.py) ────────────────────────
+-- Для 16.0/17.0 чекаутів немає, тому там усе лишається NULL. Це чесно й нічого
+-- не коштує: краще порожньо, ніж вигадано.
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS category         text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS author_raw       text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS vendors          text[];  -- без OCA-парасольки
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS is_oca           boolean;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS license          text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS summary          text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS manifest_version text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS depends          text[];
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS ext_deps         jsonb;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS website          text;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS maintainers      text[];
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS auto_install     boolean;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS application      boolean;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS manifest_error   text;   -- чому не розібрали
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS manifest_at      timestamptz;
+
+CREATE INDEX IF NOT EXISTS modules_category_idx ON modules (series, category);
+CREATE INDEX IF NOT EXISTS modules_avail_idx    ON modules (availability, installable);
+CREATE INDEX IF NOT EXISTS modules_vendors_idx  ON modules USING gin (vendors);
+
 CREATE TABLE IF NOT EXISTS runs (
   id           bigserial PRIMARY KEY,
   module_id    bigint NOT NULL REFERENCES modules(id) ON DELETE CASCADE,

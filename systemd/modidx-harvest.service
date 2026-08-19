@@ -12,6 +12,10 @@ ExecStart=/usr/bin/python3 /srv/modidx/indexer/harvest.py
 # наповнював чергу модулями, чиїх тек на диску ще немає, і перші задачі
 # після нової гілки гарантовано падали б у env через порожній addons-path.
 ExecStartPost=/bin/bash /srv/modidx/bin/sync_repos.sh
+# manifests.py читає файли з чекаутів, тому строго після sync_repos і строго
+# до enqueue: саме він проставляє installable, за яким enqueue відсіює модулі,
+# що самі заявили про невстановлюваність.
+ExecStartPost=/usr/bin/python3 /srv/modidx/indexer/manifests.py
 ExecStartPost=/usr/bin/python3 /srv/modidx/indexer/enqueue.py
 MemoryMax=1G
 StandardOutput=append:/srv/modidx/var/logs/harvest.log
