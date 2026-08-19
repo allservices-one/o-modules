@@ -18,6 +18,9 @@ TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "420"))
 MEM = os.environ.get("RUN_MEM", "2g")
 PGPASS = _password()
 IDLE_SLEEP = int(os.environ.get("IDLE_SLEEP", "30"))
+# Скільки задача може висіти в running, перш ніж вважати воркера мертвим.
+# Має бути помітно більше за RUN_TIMEOUT, інакше живий батч заберуть із-під нього.
+STALE_LOCK_MIN = int(os.environ.get("STALE_LOCK_MIN", "30"))
 # MAX_JOBS>0 — обробити стільку задач і вийти. Для ручної перевірки
 # (STEPS, «один прогін вручну»); у systemd не задається, там цикл нескінченний.
 MAX_JOBS = int(os.environ.get("MAX_JOBS", "0"))
@@ -127,6 +130,29 @@ def record(conn, module_id, series, head_sha, status, cause, detail, log, ms,
           latest_version))
 
 
+def reclaim(conn):
+    """Повернути в чергу задачі мертвих воркерів.
+
+    Без цього вбитий воркер лишає свій батч у running НАЗАВЖДИ: claim() бере
+    лише queued, а нічого не знімає лок. Спіймано 19.08.2026 на замірі BATCH=16,
+    обірваному по таймауту, — 8 задач зависли й повернути їх довелося руками.
+    Під systemd це не крайній випадок, а норма: рестарт, OOM, деплой.
+
+    Довіряти locked_at можна: його ставить той самий UPDATE, що й state.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE jobs SET state='queued', locked_by=NULL, locked_at=NULL
+        WHERE state='running' AND locked_at < now() - (%s || ' minutes')::interval
+        RETURNING id
+    """, (STALE_LOCK_MIN,))
+    n = len(cur.fetchall())
+    if n:
+        print(f"  ↺ повернуто в чергу завислих задач: {n}"
+              f" (лок старший за {STALE_LOCK_MIN} хв)", flush=True)
+    return n
+
+
 def claim(conn, limit):
     """Взяти задачі з черги. FOR UPDATE SKIP LOCKED — тому 2 воркери не б'ються.
 
@@ -227,8 +253,13 @@ def process(conn, items):
               f" {base[0]}/{base[1] or '-'} {ms}ms", flush=True)
         return
 
-    # батч упав — ділимо навпіл, щоб знайти винуватця
-    print(f"  ↯ батч із {len(items)} упав, бісекція", flush=True)
+    # Батч упав — ділимо навпіл, щоб знайти винуватця.
+    # Причину друкуємо ТУТ: у runs цей батч не потрапляє (записуються лише
+    # половини), тому без цього рядка єдиний слід того, чому впав великий батч,
+    # зникає безслідно. Саме так 19.08.2026 лишилося невідомим, чому впав BATCH=16.
+    st, cs, det = classify(log, rc, to)
+    print(f"  ↯ батч із {len(items)} упав (rc={rc}, {st}/{cs or '-'}): "
+          f"{(det or '')[:160]} — бісекція", flush=True)
     mid = len(items) // 2
     process(conn, items[:mid])
     process(conn, items[mid:])
@@ -238,9 +269,14 @@ def main():
     conn = connect()
     print(f"воркер {WORKER} · BATCH={BATCH} · MEM={MEM}"
           + (f" · MAX_JOBS={MAX_JOBS}" if MAX_JOBS else ""), flush=True)
+    reclaim(conn)          # підібрати за мертвими воркерами до першого claim
     idle = 0
     done = 0
+    last_reclaim = time.time()
     while True:
+        if time.time() - last_reclaim > 600:
+            reclaim(conn)
+            last_reclaim = time.time()
         items = claim(conn, BATCH)
         if not items:
             if MAX_JOBS:            # ручний прогін: черга порожня — виходимо, а не чекаємо
