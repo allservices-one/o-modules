@@ -36,6 +36,25 @@ def tmpl(series):
     return "tmpl_" + series.replace(".", "")
 
 
+def image_for(conn, series):
+    """Який образ проганяти для цієї серії.
+
+    Через таблицю, а не через `odoo:{series}` у коді: перехід на похідний образ
+    із оголошеними залежностями і перехід 24.09 на офіційний `odoo:20.0` мають
+    бути зміною ОДНОГО значення, а не правкою коду. Порожня таблиця означає
+    поведінку за замовчуванням, тому нічого не ламається, поки її не заповнили.
+
+    Свідомо БЕЗ кешу: воркери живуть довго з Restart=always, і закешоване
+    значення означало б, що кожна зміна образу вимагає перезапуску — тобто
+    втрати задач, які саме зараз у роботі. Один дешевий SELECT на батч із
+    восьми модулів коштує незрівнянно менше.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT image FROM series_image WHERE series=%s", (series,))
+    row = cur.fetchone()
+    return (row or {}).get("image") or f"odoo:{series}"
+
+
 def psql(sql, db="postgres"):
     return subprocess.run(
         ["docker", "exec", "-i", "-e", "PGPASSWORD", "modidx-pg",
@@ -44,7 +63,7 @@ def psql(sql, db="postgres"):
         capture_output=True, text=True, timeout=120, env=CHILD_ENV)
 
 
-def run_install(series, modules, dbname):
+def run_install(series, modules, dbname, image):
     """Один прогін. → (returncode, log, timed_out, ms)"""
     pool = ROOT / "var" / "pool" / series
     repos = ROOT / "var" / "repos" / series
@@ -66,7 +85,7 @@ def run_install(series, modules, dbname):
         # у кінець команди (exec odoo "$@" "${DB_ARGS[@]}"), тому флаги --db_host
         # і --db_password перебиваються дефолтами 'db' та 'odoo'. Див. mktemplate.sh.
         "-e", "HOST=pg", "-e", "PORT=5432", "-e", "USER=odoo", "-e", "PASSWORD",
-        f"odoo:{series}", "odoo",
+        image, "odoo",
         "-d", dbname,
         "--addons-path=/mnt/pool,/usr/lib/python3/dist-packages/odoo/addons",
         "-i", ",".join(modules),
@@ -127,14 +146,14 @@ def drop_db(name):
 
 
 def record(conn, module_id, series, head_sha, status, cause, detail, log, ms,
-           batched, latest_version=None):
+           batched, latest_version=None, image=None):
     conn.cursor().execute("""
         INSERT INTO runs (module_id, series, head_sha, status, cause, detail,
                           log_tail, duration_ms, odoo_image, batched, latest_version)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """, (module_id, series, head_sha, status, cause, detail,
-          tail(log) if status not in ("ok",) else None, ms, f"odoo:{series}", batched,
-          latest_version))
+          tail(log) if status not in ("ok",) else None, ms,
+          image or f"odoo:{series}", batched, latest_version))
 
 
 def reclaim(conn):
@@ -226,9 +245,10 @@ def process(conn, items):
     """items: [(job, module)] однієї серії. Батч із бісекцією."""
     series = items[0][1]["series"]
     names = [m["module"] for _, m in items]
+    image = image_for(conn, series)
     db = fresh_db(series)
     try:
-        rc, log, to, ms = run_install(series, names, db)
+        rc, log, to, ms = run_install(series, names, db, image)
         # ДО drop_db: сама БД і є доказом. Після видалення питати нема в кого.
         inst = check_installed(db, names) if not to else None
     finally:
@@ -251,7 +271,7 @@ def process(conn, items):
                     detail = ("rc=0, але модуль не встановлено: ir_module_module.state="
                               + (st or "запису немає"))
             record(conn, m["id"], series, m["head_sha"], status, cause, detail, log,
-                   per, len(items) > 1, ver)
+                   per, len(items) > 1, ver, image)
             marks.append(MARK.get(status, "?"))
         finish(conn, [j["id"] for j, _ in items])
         # У батчі статуси тепер можуть різнитися по модулях — друкуємо по одному

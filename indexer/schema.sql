@@ -99,6 +99,54 @@ ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_module_id_state_key;
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_uniq ON jobs (module_id)
   WHERE state IN ('queued','running');
 
+-- ── Інвентаризація оточення ─────────────────────────────────────────────────
+-- Одна й та сама робота потрібна у двох місцях (ops/inbox/0015 і 0016), тому
+-- робиться раз: похідний образ проти env і секція залежностей на сторінці
+-- модуля мусять спиратися на ті самі факти, інакше вони почнуть суперечити.
+
+-- Що лежить в образі. Знімок НА ТЕГ: склад образу змінюється, і «пакета немає»
+-- без мітки тегу одного дня почне брехати саме тому, що ми оновили образ.
+CREATE TABLE IF NOT EXISTS image_packages (
+  image_tag text NOT NULL,
+  kind      text NOT NULL,          -- python | bin
+  name      text NOT NULL,
+  version   text,
+  taken_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (image_tag, kind, name)
+);
+
+-- Модулі ядра Odoo. Без цього списку `base` і `account` потрапили б у
+-- «невідоме», і сторінка залежностей виглядала б так, ніби половина
+-- залежностей загублена. Склад ядра різний між серіями, тому тег обов'язковий.
+CREATE TABLE IF NOT EXISTS core_addons (
+  series    text NOT NULL,
+  name      text NOT NULL,
+  image_tag text NOT NULL,
+  taken_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (series, name)
+);
+
+-- Який образ проганяти для якої серії. Без цієї таблиці перехід на похідний
+-- образ (і 24.09 на офіційний odoo:20.0) був би правкою коду замість зміни
+-- одного значення.
+CREATE TABLE IF NOT EXISTS series_image (
+  series    text PRIMARY KEY,
+  image     text NOT NULL,
+  note      text,
+  set_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- Пакет, який оголошений модулем, але не ставиться в стандартному оточенні
+-- (немає wheel, конфлікт версій, потрібен компілятор). Це НЕ env: це факт про
+-- модуль, і він цінний сам по собі.
+CREATE TABLE IF NOT EXISTS unbuildable_deps (
+  image_tag text NOT NULL,
+  name      text NOT NULL,
+  error     text,
+  taken_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (image_tag, name)
+);
+
 -- Зміни стану модуля — джерело для Atom-фідів.
 --
 -- Подією є САМЕ ЗМІНА, а не прогін. Щоденний прохід дає ~4 000 прогонів на добу,
