@@ -32,7 +32,24 @@ def repo_names():
     tmp = WORK / "mt"
     sh(["git", "clone", "-q", "--depth", "1",
         "https://github.com/OCA/maintainer-tools", str(tmp)])
-    txt = (tmp / "tools" / "repos_with_ids.txt").read_text()
+    src = tmp / "tools" / "repos_with_ids.txt"
+    if not src.exists():
+        # Станом на 19.08.2026 цього файлу в maintainer-tools БІЛЬШЕ НЕМАЄ:
+        # OCA перейшла на перелік через GitHub API (tools/oca_projects.py,
+        # gh.repositories_by("OCA")). Тобто цей шлях мертвий, і список живе
+        # тільки як кеш у var/oca_repos.txt.
+        #
+        # НЕ мовчати: раніше тут був би FileNotFoundError із незрозумілим
+        # трейсбеком, а порада з CLAUDE.md «видалити var/oca_repos.txt, він
+        # перезбереться» тихо зламала б harvest. Список станом на 19.08.2026
+        # відстає від OCA на 56 репозиторіїв з модулями — див.
+        # ops/outbox/0007. Рішення про нове джерело за власником.
+        raise SystemExit(
+            "harvest: джерело списку репозиторіїв недоступне — "
+            f"{src} немає в OCA/maintainer-tools (файл прибрано в апстрімі).\n"
+            "Список береться з кешу var/oca_repos.txt. Якщо кеш видалено — "
+            "відновити його з git або узгодити нове джерело (ops/outbox/0007).")
+    txt = src.read_text()
     skip = {"maintainer-tools", "OCB", "OpenUpgrade", "openupgradelib", "pylint-odoo",
             "odoo-module-migrator", "oca-port", "oca-ci", "oca-github-bot", "oca-custom",
             ".github", "ansible-odoo", "odoo-community.org", "odoorpc", "oca-decorators",
