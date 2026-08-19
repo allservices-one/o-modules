@@ -63,12 +63,22 @@ nav{font-size:13px;color:var(--m);margin-bottom:18px}
 @media(max-width:700px){.tiles{grid-template-columns:1fr 1fr}}
 """
 
-def page(title, body, desc="", jsonld=None):
+def page(title, body, desc="", jsonld=None, noindex=False):
+    """noindex=True ставить <meta name="robots" content="noindex"> у <head>.
+
+    Використовується для сторінок, у яких ще немає жодного install-статусу.
+    Свідомо НЕ через robots.txt і НЕ через X-Robots-Tag у Caddy:
+      * Disallow у robots.txt і noindex взаємно скасовуються — закритий краулер
+        просто не прочитає noindex, а URL усе одно може потрапити в індекс;
+      * Disallow заблокував би GPTBot, а цитованість LLM — основний канал проєкту.
+    Тег зникає автоматично, як тільки в модуля з'явиться перший статус.
+    """
     ld = f'<script type="application/ld+json">{json.dumps(jsonld, ensure_ascii=False)}</script>' if jsonld else ""
+    ni = '<meta name="robots" content="noindex">' if noindex else ""
     return f"""<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(title)}</title>
-<meta name="description" content="{html.escape(desc)}">
+<meta name="description" content="{html.escape(desc)}">{ni}
 <style>{CSS}</style>{ld}</head><body><div class="w">
 <nav><a href="/">{TITLE}</a> · <a href="/methodology.html">методологія</a> · <a href="/data/">датасет</a></nav>
 {body}
@@ -199,8 +209,11 @@ document.getElementById('q').addEventListener('input',async e=>{{
               "name": mod, "codeRepository": f"https://github.com/OCA/{repo}",
               "applicationCategory": "Odoo module",
               "url": f"{BASE}/m/{repo}/{mod}/", "dateModified": NOW.isoformat()}
+        # жодного install-статусу по жодній серії → сторінка ще порожня, noindex
+        has_status = any((v.get(s) or {}).get("status") for s in series)
         (d / "index.html").write_text(page(f"{mod} — сумісність з версіями Odoo", b,
-            f"Чи встановлюється модуль {mod} з {repo} на версії Odoo.", ld))
+            f"Чи встановлюється модуль {mod} з {repo} на версії Odoo.", ld,
+            noindex=not has_status))
         search.append({"r": repo, "m": mod,
                        "s": [chip((v.get(s) or {}).get("status")) for s in series[-4:]]})
 
@@ -217,11 +230,16 @@ document.getElementById('q').addEventListener('input',async e=>{{
             f'<tr><td><a href="/m/{repo}/{m}/">{m}</a></td>' +
             "".join(f"<td>{chip((v.get(s) or {}).get('status'))}</td>" for s in series[-4:]) + "</tr>"
             for m, v in sorted(items))
+        # те саме правило, що й для сторінок модулів: якщо в репозиторії жоден
+        # модуль ще не має статусу — сторінка порожня по суті, тримаємо її поза індексом
+        repo_has_status = any((v.get(s) or {}).get("status")
+                              for _, v in items for s in series)
         (d / "index.html").write_text(page(f"{repo} — сумісність модулів",
             f'<h1>{repo}</h1><p class="mut">{len(items)} модулів · '
             f'<a href="https://github.com/OCA/{repo}">GitHub</a></p>'
             f'<table><tr><th>Модуль</th>{head}</tr>{rws}</table>',
-            f"Сумісність модулів репозиторію OCA {repo} з версіями Odoo."))
+            f"Сумісність модулів репозиторію OCA {repo} з версіями Odoo.",
+            noindex=not repo_has_status))
 
     # ---------- датасет ----------
     with open(SITE / "data" / "modules.csv", "w", newline="") as f:
@@ -240,13 +258,39 @@ document.getElementById('q').addEventListener('input',async e=>{{
         '<p class="mut">Ліцензія даних: CC BY 4.0. Посилайтеся на джерело.</p>',
         "Відкриті дані про сумісність модулів OCA з версіями Odoo."))
 
+    # ---------- robots.txt і sitemap.xml ----------
+    # Нічого не забороняємо: GPTBot та інші LLM-краулери — основний канал проєкту.
+    # Тонкі сторінки тримаються поза індексом посторінковим noindex (див. page()).
+    (SITE / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\n\nSitemap: {BASE}/sitemap.xml\n")
+
+    # У sitemap — тільки сторінки з реальним вмістом. Сторінки під noindex у
+    # sitemap не включаємо: заявляти в карті те, що просимо не індексувати, —
+    # суперечливий сигнал.
+    sm = ["/", "/methodology.html", "/data/"]
+    (SITE / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "".join(f"<url><loc>{BASE}{u}</loc>"
+                  f"<lastmod>{NOW:%Y-%m-%d}</lastmod></url>\n" for u in sm)
+        + "</urlset>\n")
+
+    # ---------- llms.txt ----------
+    # Формулювання залежить від того, чи є вже прогони. Заявляти «за результатами
+    # реальних install-прогонів» при tested=0 — неправда, і саме цей файл цитують LLM.
+    if tested:
+        what = ("Фактична сумісність модулів Odoo (OCA) з версіями Odoo, "
+                "за результатами реальних install-прогонів.")
+    else:
+        what = (f"Індекс наявності версійних гілок модулів OCA, зібраний з git. "
+                f"Фактична перевірка install у процесі, протестовано {tested} з {len(mods)}.")
     (SITE / "llms.txt").write_text(f"""# {TITLE}
-Фактична сумісність модулів Odoo (OCA) з версіями Odoo, за результатами реальних install-прогонів.
-Оновлення: щодня. Дані: {BASE}/data/modules.csv (CSV, CC BY 4.0)
+{what}
+Дані: {BASE}/data/modules.csv (CSV, CC BY 4.0)
 Сторінка модуля: {BASE}/m/<repo>/<module>/
 Методологія: {BASE}/methodology.html
 Останнє оновлення: {NOW.isoformat()}
-Модулів в індексі: {len(mods)}. Серії: {', '.join(series)}.
+Модулів в індексі: {len(mods)}. Протестовано: {tested}. Серії: {', '.join(series)}.
 """)
 
     (SITE / "methodology.html").write_text(page("Методологія", f"""<h1>Методологія</h1>
