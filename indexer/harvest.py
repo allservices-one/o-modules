@@ -22,6 +22,13 @@ MANIFEST_AT_TOP = re.compile(r"^([^/]+)/__manifest__\.py$")
 # Список репозиторіїв живе В GIT, не у var/: кожна зміна екосистеми стає діффом
 # у комміті, і поява чи зникнення репозиторію OCA — подія в історії, а не
 # невидимість. Це заодно дані, яких більше ні в кого немає.
+WORK = pathlib.Path(tempfile.mkdtemp(prefix="harvest-"))
+
+
+def sh(args, cwd=None, timeout=180):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
 LIST = ROOT / "data" / "oca_repos.txt"
 LIST_LEGACY = ROOT / "var" / "oca_repos.txt"        # кеш зі старої схеми
 
@@ -39,6 +46,11 @@ SKIP_REPOS = {
 # Якщо новий список коротший за кеш більш ніж на стільки — не застосовувати.
 # Той самий принцип, що в жниві: масова втрата — це майже завжди наш збій.
 LIST_SHRINK_MAX = int(os.environ.get("LIST_SHRINK_MAX", "5"))
+# Чи цей список — свіжий з API, чи аварійний кеш. Від цього залежить, чи має
+# право жнець прибирати репозиторії, яких у списку немає: на кеші такого права
+# немає, інакше збій API плюс застарілий кеш викосили б живі репозиторії.
+LIST_FRESH = False
+CURRENT_REPOS = set()
 
 
 def _github_org_repos(org="OCA", pages=10):
@@ -72,6 +84,12 @@ def _github_org_repos(org="OCA", pages=10):
     return out
 
 
+def _set_current(names, fresh):
+    global LIST_FRESH, CURRENT_REPOS
+    CURRENT_REPOS = set(names)
+    LIST_FRESH = fresh
+
+
 def _read_list(path):
     if path.exists() and path.stat().st_size:
         return sorted({l.strip() for l in path.read_text().splitlines() if l.strip()})
@@ -89,8 +107,10 @@ def repo_names():
         if not cached:
             raise SystemExit(f"harvest: GitHub API недоступний ({e}) і кешу немає. "
                              f"Відновіть {LIST} з git.")
+        _set_current(cached, fresh=False)
         print(f"  !! GitHub API недоступний ({e}) — працюю з КЕШУ {LIST.name}, "
               f"{len(cached)} репозиторіїв. Список може відставати.", file=sys.stderr)
+        _set_current(cached, fresh=False)
         return cached
 
     if cached:
@@ -102,6 +122,7 @@ def repo_names():
                   f"Працюю з кешу, список не оновлюю.", file=sys.stderr)
             for n in gone[:20]:
                 print(f"     зник: {n}", file=sys.stderr)
+            _set_current(cached, fresh=False)
             return cached
         # Новий репозиторій індексуємо, але НАЗИВАЄМО: інакше службовий одного дня
         # тихо потрапить у статистику як «модулі».
@@ -112,6 +133,7 @@ def repo_names():
 
     LIST.parent.mkdir(parents=True, exist_ok=True)
     LIST.write_text("\n".join(fresh) + "\n")
+    _set_current(fresh, fresh=True)
     return fresh
 
 
@@ -293,6 +315,18 @@ def persist(rows):
                 targets.append((r["repo"], s, None, True))
             elif b.get("ok"):                   # гілку реально прочитано
                 targets.append((r["repo"], s, list(b["modules"].keys()), False))
+
+    # Репозиторій, який зник зі списку OCA (архівовано, перейменовано, видалено),
+    # жнець вище НЕ бачить: він обходить лише те, що є в rows. Без цього мертві
+    # репозиторії лишаються в індексі назавжди — той самий клас, що й фантоми
+    # модулів. Спіймано 19.08.2026: infrastructure-dns і interface-github,
+    # 8 рядків. Косимо ТІЛЬКИ якщо список свіжий з API: на аварійному кеші
+    # такого права немає.
+    if LIST_FRESH and CURRENT_REPOS:
+        cur.execute("SELECT DISTINCT repo, series FROM modules")
+        for row in cur.fetchall():
+            if row["repo"] not in CURRENT_REPOS:
+                targets.append((row["repo"], row["series"], None, True))
     reap(cur, targets)
 
     for s in SERIES:
