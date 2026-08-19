@@ -66,6 +66,9 @@ def branch_detail(repo, series):
     # хто з них справді модуль. `-r` на treeless-клоні дотягує всі дерева
     # (не блоби), тому дорожчий за кореневий ls-tree — ціна зміряна в outbox.
     t = sh(["git", "ls-tree", "HEAD"], cwd=d)
+    if t.returncode != 0:
+        shutil.rmtree(d, ignore_errors=True)
+        return None
     trees = {}
     for line in t.stdout.splitlines():
         parts = line.split()
@@ -75,6 +78,12 @@ def branch_detail(repo, series):
                 continue
             trees[name] = parts[2]          # sha теки модуля
     r = sh(["git", "ls-tree", "-r", "--name-only", "HEAD"], cwd=d, timeout=300)
+    if r.returncode != 0:
+        # R2: успішний клон ще не означає прочитану гілку. Якщо ls-tree впав,
+        # ми НЕ знаємо складу гілки — а порожній список нижче виглядав би як
+        # «гілка спорожніла» і жнець викосив би весь репозиторій із індексу.
+        shutil.rmtree(d, ignore_errors=True)
+        return None
     with_manifest = set()
     for line in r.stdout.splitlines():
         m = MANIFEST_AT_TOP.match(line)
@@ -97,12 +106,93 @@ def handle(repo):
             # ok=False — клон не вдався. Це НЕ те саме, що «гілка без модулів»:
             # без цього прапорця жнець нижче викосив би всі модулі репозиторію
             # через одну мережеву помилку.
+            # ok=False — гілку прочитати не вдалося (клон АБО будь-який ls-tree).
+            # Це НЕ те саме, що «гілка без модулів»: без цього прапорця жнець
+            # викосив би всі модулі репозиторію через одну мережеву помилку.
             row[s] = {"modules": (d or {}).get("modules", {}),
                       "last_commit": (d or {}).get("last_commit", ""),
                       "ok": d is not None}
         else:
             row[s] = None
     return row
+
+
+# Версія методики підрахунку модулів. Змінюється РАЗОМ із правилом, і цифри
+# різних методик не можна класти в один ряд для розрахунку нахилу.
+#   v1 — будь-яка тека верхнього рівня (до 19.08.2026)
+#   v2 — тека з __manifest__.py на першому рівні
+METHOD = os.environ.get("HARVEST_METHOD", "v2")
+
+# R1: жнець — єдине місце, яке ВТРАЧАЄ дані, і його помилка тиха: індекс худне,
+# а сайт виглядає нормально. Тому верхня межа за прогін. Реальна робота OCA за
+# добу — одиниці рядків, тож поріг не заважає ніколи, крім справжньої аварії.
+REAP_MAX_SHARE = 0.02
+REAP_MIN_ABS = 50
+
+
+def reap(cur, targets):
+    """Прибрати з індексу модулі, яких у гілці більше немає.
+
+    Без цього harvest лише додає: виправлене правило перестало б додавати
+    фантоми, але вже наявні лишилися б у БД назавжди. І гірше — модуль,
+    прибраний з апстріму, показувався б вічно, що для індексу «фактичного
+    стану» є прямим дефектом.
+
+    Косимо ТІЛЬКИ по парах (репозиторій, серія), прочитаних цього разу без
+    помилки: недоступний на хвилину GitHub не має права зітерти пів індексу.
+    Спершу рахуємо заплановане, і лише потім видаляємо — щоб перевищення
+    порога зупинило жнива цілком, а не на середині.
+    """
+    cur.execute("SELECT count(*) c FROM modules")
+    total = cur.fetchone()["c"]
+    limit = max(REAP_MIN_ABS, int(total * REAP_MAX_SHARE))
+
+    plan, warn = [], []
+    for repo, s, keep, branch_gone in targets:
+        if branch_gone:
+            cur.execute("SELECT count(*) c FROM modules WHERE repo=%s AND series=%s",
+                        (repo, s))
+            n = cur.fetchone()["c"]
+            if n:
+                plan.append((repo, s, None, n))
+            continue
+        cur.execute("SELECT count(*) c FROM modules WHERE repo=%s AND series=%s",
+                    (repo, s))
+        had = cur.fetchone()["c"]
+        if had and not keep:
+            # R2: гілка не спорожнюється в нуль за добу — це майже завжди наш
+            # збій, а не робота OCA. Попереджаємо, але не косимо.
+            warn.append(f"{repo}@{s}: у БД {had}, у зрізі 0 — не чіпаю")
+            continue
+        cur.execute("SELECT count(*) c FROM modules WHERE repo=%s AND series=%s "
+                    "AND NOT (module = ANY(%s))", (repo, s, keep or [""]))
+        n = cur.fetchone()["c"]
+        if n:
+            plan.append((repo, s, keep, n))
+
+    for w in warn:
+        print(f"  ! жнець: {w}", file=sys.stderr)
+
+    planned = sum(n for *_, n in plan)
+    if planned > limit:
+        print(f"  !! жнець ЗУПИНЕНО: заплановано видалити {planned} рядків "
+              f"при межі {limit} ({REAP_MAX_SHARE:.0%} від {total}). "
+              f"Нічого не видалено — розбиратися вручну.", file=sys.stderr)
+        for repo, s, _, n in sorted(plan, key=lambda x: -x[3])[:10]:
+            print(f"     {repo}@{s}: {n}", file=sys.stderr)
+        return 0
+
+    done = 0
+    for repo, s, keep, _ in plan:
+        if keep is None:
+            cur.execute("DELETE FROM modules WHERE repo=%s AND series=%s", (repo, s))
+        else:
+            cur.execute("DELETE FROM modules WHERE repo=%s AND series=%s "
+                        "AND NOT (module = ANY(%s))", (repo, s, keep or [""]))
+        done += cur.rowcount
+    if done:
+        print(f"  жнець: прибрано записів модулів: {done} (межа {limit})", file=sys.stderr)
+    return done
 
 
 def persist(rows):
@@ -124,37 +214,33 @@ def persist(rows):
                           last_commit = EXCLUDED.last_commit,
                           seen_at = now()
                 """, (r["repo"], mod, s, sha, b["last_commit"]))
-    # Жнець: модуль, якого в гілці більше немає, мусить зникнути з індексу.
-    # Без цього harvest лише додає, і будь-яка помилка підрахунку лишається в
-    # БД назавжди — саме так фантом stock-logistics-transport/lessons пережив
-    # би виправлення правила «модуль = тека з __manifest__.py».
-    # Косимо ТІЛЬКИ по парах (репозиторій, серія), які цього разу реально
-    # прочитано (ok=True). Гілка, якої вже немає, теж чиститься.
-    reaped = 0
+    targets = []
     for r in rows:
         if r.get("error"):
             continue
         for s in SERIES:
             b = r.get(s)
-            if b is None:
-                cur.execute("DELETE FROM modules WHERE repo=%s AND series=%s",
-                            (r["repo"], s))
-                reaped += cur.rowcount
-                continue
-            if not b.get("ok"):
-                continue
-            cur.execute("DELETE FROM modules WHERE repo=%s AND series=%s "
-                        "AND NOT (module = ANY(%s))",
-                        (r["repo"], s, list(b["modules"].keys()) or [""]))
-            reaped += cur.rowcount
-    if reaped:
-        print(f"  жнець: прибрано записів модулів: {reaped}", file=sys.stderr)
+            if b is None:                       # гілки більше немає в OCA
+                targets.append((r["repo"], s, None, True))
+            elif b.get("ok"):                   # гілку реально прочитано
+                targets.append((r["repo"], s, list(b["modules"].keys()), False))
+    reap(cur, targets)
 
     for s in SERIES:
         repos = sum(1 for r in rows if r.get(s))
         mods = sum(len(r[s]["modules"]) for r in rows if r.get(s))
-        cur.execute("""INSERT INTO series_snapshots (series, repos, modules)
-                       VALUES (%s,%s,%s) ON CONFLICT DO NOTHING""", (s, repos, mods))
+        # R3: PRIMARY KEY (taken_at, series) при taken_at DEFAULT now() не
+        # конфліктує НІКОЛИ, тому старий ON CONFLICT DO NOTHING не працював і
+        # кожен ручний запуск додавав ще одну точку за той самий день —
+        # публічний графік темпу став би зубчастим від наших же перевірок.
+        # Тепер конфлікт по (день, серія, метод): повторний запуск оновлює точку.
+        cur.execute("""INSERT INTO series_snapshots (series, repos, modules, method)
+                       VALUES (%s,%s,%s,%s)
+                       ON CONFLICT (((taken_at AT TIME ZONE 'UTC')::date), series, method)
+                       DO UPDATE
+                         SET repos = EXCLUDED.repos, modules = EXCLUDED.modules,
+                             taken_at = now()""",
+                    (s, repos, mods, METHOD))
     conn.close()
 
 

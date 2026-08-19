@@ -71,5 +71,23 @@ CREATE TABLE IF NOT EXISTS series_snapshots (
   repos       int NOT NULL,
   modules     int NOT NULL,
   installs_ok int,
+  method      text NOT NULL DEFAULT 'v2',   -- версія методики підрахунку модулів
   PRIMARY KEY (taken_at, series)
 );
+ALTER TABLE series_snapshots ADD COLUMN IF NOT EXISTS method text NOT NULL DEFAULT 'v2';
+
+-- PRIMARY KEY (taken_at, series) при taken_at DEFAULT now() не конфліктує ніколи,
+-- тому ON CONFLICT DO NOTHING був мертвим кодом: кожен ручний запуск harvest
+-- додавав ще одну точку за той самий день і робив публічний графік темпу
+-- зубчастим від наших же перевірок. Конфлікт має бути по (день, серія, метод).
+--
+-- method: v1 — будь-яка тека верхнього рівня (до 19.08.2026);
+--         v2 — тека з __manifest__.py на першому рівні.
+-- Нахил і будь-які похідні цифри рахувати ТІЛЬКИ в межах одного методу.
+-- Саме AT TIME ZONE 'UTC', а не taken_at::date: приведення timestamptz до date
+-- залежить від параметра TimeZone сесії, тому НЕ immutable, і Postgres відмовляє
+-- будувати по ньому індекс («functions in index expression must be marked
+-- IMMUTABLE»). Фіксація зони робить вираз детермінованим. Заодно доба зрізу
+-- скрізь означає добу UTC, незалежно від налаштувань клієнта.
+CREATE UNIQUE INDEX IF NOT EXISTS series_snapshots_daily
+  ON series_snapshots (((taken_at AT TIME ZONE 'UTC')::date), series, method);

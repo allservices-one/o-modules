@@ -328,8 +328,10 @@ def status_json(conn):
     cur = conn.cursor()
     cur.execute("SELECT series, count(*) c FROM modules GROUP BY 1 ORDER BY 1")
     by_series = {r["series"]: r["c"] for r in cur.fetchall()}
-    cur.execute("SELECT max(taken_at) AS t FROM series_snapshots")
-    last_harvest = (cur.fetchone() or {}).get("t")
+    cur.execute("SELECT taken_at, method FROM series_snapshots "
+                "ORDER BY taken_at DESC LIMIT 1")
+    row = cur.fetchone() or {}
+    last_harvest, method = row.get("taken_at"), row.get("method")
     cur.execute("SELECT status, count(*) c FROM latest_runs GROUP BY 1 ORDER BY 1")
     by_status = {r["status"]: r["c"] for r in cur.fetchall()}
     cur.execute("SELECT state, count(*) c FROM jobs GROUP BY 1 ORDER BY 1")
@@ -360,6 +362,9 @@ def status_json(conn):
         "commit": _cmd(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], "unknown"),
         "harvest": {
             "last_run": last_harvest.isoformat() if last_harvest else None,
+            # Версія методики підрахунку. Цифри різних методик не можна класти
+            # в один ряд — саме тому вона їде разом із ними, а не десь у доках.
+            "method": method,
             "modules_by_series": by_series,
         },
         "runs": {
