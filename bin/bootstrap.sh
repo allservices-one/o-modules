@@ -53,7 +53,7 @@ for s in $SERIES; do
   docker image inspect "odoo:$s" >/dev/null 2>&1 || docker pull "odoo:$s"
 done
 
-log "7. Postgres + Caddy"
+log "7. Postgres (Caddy НЕ піднімаємо — чекає на AAAA, див. Caddyfile)"
 docker compose up -d pg
 until docker exec modidx-pg pg_isready -U odoo -d modidx >/dev/null 2>&1; do sleep 2; done
 

@@ -14,11 +14,17 @@ if psql -tAc "SELECT 1 FROM pg_database WHERE datname='$TMPL'" | grep -q 1; then
 fi
 
 echo "  створюю $TMPL (установка base на Odoo $S)…"
+psql -c "DROP DATABASE IF EXISTS ${TMPL}_build"
 psql -c "CREATE DATABASE ${TMPL}_build"
+# Параметри БД передаються ТІЛЬКИ через env, не через флаги.
+# Entrypoint офіційного образу збирає DB_ARGS з env (HOST по замовчуванню 'db',
+# PASSWORD — 'odoo') і дописує їх у кінець: exec odoo "$@" "${DB_ARGS[@]}".
+# Тобто будь-який наш --db_host / --db_password перебивається. Перевірено 19.08.2026:
+# з флагами падало на 'could not translate host name "db"'.
 docker run --rm --network modidx --memory=2g \
-  -e PGPASSWORD="$PGPASSWORD" \
+  -e HOST=pg -e PORT=5432 -e USER=odoo -e PASSWORD="$PGPASSWORD" \
   "odoo:$S" odoo \
-    -d "${TMPL}_build" --db_host=pg --db_user=odoo --db_password="$PGPASSWORD" \
+    -d "${TMPL}_build" \
     -i base --without-demo=all --stop-after-init --no-http \
     --max-cron-threads=0 --log-level=warn
 

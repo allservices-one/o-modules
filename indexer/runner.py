@@ -40,8 +40,12 @@ def run_install(series, modules, dbname):
         f"--memory={MEM}", "--memory-swap", MEM, "--cpus", "1.5",
         "--pids-limit", "512", "--security-opt", "no-new-privileges",
         "-v", f"{pool}:/mnt/pool:ro",
+        # Параметри БД — тільки через env. Entrypoint образу дописує DB_ARGS з env
+        # у кінець команди (exec odoo "$@" "${DB_ARGS[@]}"), тому флаги --db_host
+        # і --db_password перебиваються дефолтами 'db' та 'odoo'. Див. mktemplate.sh.
+        "-e", "HOST=pg", "-e", "PORT=5432", "-e", "USER=odoo", "-e", f"PASSWORD={PGPASS}",
         f"odoo:{series}", "odoo",
-        "-d", dbname, "--db_host=pg", "--db_user=odoo", f"--db_password={PGPASS}",
+        "-d", dbname,
         "--addons-path=/mnt/pool,/usr/lib/python3/dist-packages/odoo/addons",
         "-i", ",".join(modules),
         "--without-demo=all", "--stop-after-init", "--no-http",
