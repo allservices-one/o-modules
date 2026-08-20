@@ -18,7 +18,7 @@
 Візуальна мова — версійні чипи і власний знак. У підвалі кожної сторінки
 стоїть дисклеймер про непов'язаність із Odoo S.A. та OCA.
 """
-import csv, html, json, os, pathlib, shutil, subprocess, sys, urllib.parse, datetime
+import csv, html, json, os, pathlib, re, shutil, subprocess, sys, urllib.parse, datetime
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT
 from state import derive_state, label as state_label, breakdown
@@ -46,7 +46,7 @@ STATUS_CLS = {
     # критичної палітри тут немає: not_installable — це намір автора
     # (метапакет, залишок _unported), а не поломка.
     "pending": ("·", "muted"), "not_installable": ("◌", "muted"),
-    "not_verifiable": ("?", "muted"),
+    "not_verifiable": ("?", "muted"), "out_of_scope": ("–", "muted"),
     None: ("—", "muted"),
 }
 
@@ -92,6 +92,25 @@ T = {
         "f_none": "Nothing matches these filters.",
         "col_vendor": "Vendor", "col_cat": "Category", "col_repo": "Repository",
         "sort_hint": "Click a header to sort",
+        "status_all_h": "Install status by series",
+        "bar_note": "{v} verified of {r} runnable ({tot} in this series)",
+        "bar_none": "not run — {tot} modules indexed from git only",
+        "dep_h": "Depends on", "dep_col": "Module", "dep_when": "Checked",
+        "dep_core": "core", "dep_core_note": "ships with Odoo",
+        "dep_absent": "not in the index for {s}",
+        "dep_none": "No Odoo dependencies declared.",
+        "dep_unknown_manifest": "Manifest not read for this series — "
+                                "we only index which series have a branch here.",
+        "dep_blocked": "Blocked by {n} of {m} dependencies on {s}:",
+        "ext_h": "External dependencies", "ext_kind": "Kind", "ext_pkg": "Package",
+        "ext_state": "In our image", "ext_in": "yes", "ext_out": "NO",
+        "ext_note": "Checked against {img}.",
+        "dep_in_image": "in image", "dep_not_in_image": "NOT in image",
+        "rev_h": "Depended on by",
+        "rev_p": "{n} modules on {s} declare this one as a dependency.",
+        "git_h": "History", "git_last": "Last change", "git_work": "Code commits, 12 months",
+        "git_authors": "Most active", "git_files": "Files",
+        "git_note": "Translation and bot commits are excluded from the commit count.",
         "f_link": "This selection is a link — copy the address bar to share it.",
         "denom": "{ok} of {ver} tested modules on {s} install cleanly ({pct}%). "
                  "Runnable: {run} of {total} — {noninst} not installable by "
@@ -154,6 +173,28 @@ T = {
         "f_none": "За цими фільтрами нічого немає.",
         "col_vendor": "Вендор", "col_cat": "Категорія", "col_repo": "Репозиторій",
         "sort_hint": "Клік на заголовку — сортування",
+        "status_all_h": "Статус install по серіях",
+        "bar_note": "перевірено {v} з {r} прогонабельних ({tot} у цій серії)",
+        "bar_none": "не проганялась — {tot} модулів індексовано лише з git",
+        "dep_h": "Залежить від", "dep_col": "Модуль", "dep_when": "Перевірено",
+        "dep_core": "ядро", "dep_core_note": "йде в самому Odoo",
+        "dep_absent": "немає в індексі для {s}",
+        "dep_none": "Залежностей Odoo не оголошено.",
+        "dep_unknown_manifest": "Манифест для цієї серії не читався — тут ми "
+                                "індексуємо лише наявність гілки.",
+        # Форма навмисно без узгодження числівника: «1 залежностей» неграмотно,
+        # а перебирати відмінки заради одного рядка — зайве. «Не вистачає N з M»
+        # правильне для будь-якого числа.
+        "dep_blocked": "Не вистачає {n} з {m} залежностей на {s}:",
+        "ext_h": "Зовнішні залежності", "ext_kind": "Вид", "ext_pkg": "Пакет",
+        "ext_state": "У нашому образі", "ext_in": "так", "ext_out": "НІ",
+        "ext_note": "Перевірено проти {img}.",
+        "dep_in_image": "є в образі", "dep_not_in_image": "НЕМАЄ в образі",
+        "rev_h": "Від нього залежать",
+        "rev_p": "{n} модулів на {s} оголошують його своєю залежністю.",
+        "git_h": "Історія", "git_last": "Остання зміна", "git_work": "Комітів коду за 12 міс",
+        "git_authors": "Найактивніші", "git_files": "Файлів",
+        "git_note": "Переклади й коміти ботів у підрахунок не входять.",
         "f_link": "Цей відбір — посилання: скопіюйте адресний рядок, щоб поділитися.",
         "denom": "{ok} з {ver} перевірених модулів на {s} встановлюються чисто "
                  "({pct}%). Прогонабельних: {run} з {total} — {noninst} не "
@@ -309,6 +350,12 @@ letter-spacing:0;font-size:13.5px;color:var(--i)}
 th[data-sort]{cursor:pointer;user-select:none}
 th[data-sort]:focus-visible{outline:2px solid var(--good);outline-offset:-2px}
 th[data-arrow]:not([data-arrow=""])::after{content:" " attr(data-arrow);font-weight:700}
+/* Матриця модуль × серія: чотири клітинки в рядок, згортається на телефоні. */
+.mxr{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px}
+.mx{display:flex;flex-direction:column;gap:5px;padding:9px 12px;
+border:1px solid var(--l);border-radius:8px;background:var(--s);min-width:104px}
+.bh{font-size:13px;margin:16px 0 4px;font-weight:600}
+.bh .mut{font-weight:400;font-size:12px}
 tr.grp td{background:var(--l);font-weight:600;font-size:12px;
 text-transform:uppercase;letter-spacing:.04em;color:var(--m)}
 .bar{display:flex;gap:2px;height:26px;border-radius:5px;overflow:hidden;margin:10px 0 6px}
@@ -342,7 +389,7 @@ def out_path(lang, rel):
 
 
 def st_label(status, lang):
-    if status in ("pending", "not_installable", "not_verifiable"):
+    if status in ("pending", "not_installable", "not_verifiable", "out_of_scope"):
         return state_label(status, lang)
     key = {"ok": "st_ok", "warn": "st_warn", "dep": "st_dep", "env": "st_env",
            "fail": "st_fail", "timeout": "st_timeout"}.get(status, "st_none")
@@ -571,6 +618,121 @@ def status_json(conn):
     return data
 
 
+def norm_pkg(name):
+    """PEP 503: `python_slugify`, `Python-Slugify`, `python.slugify` — одне й те саме."""
+    base = re.split(r"[<>=!~;\[]", str(name), 1)[0].strip()
+    return re.sub(r"[-_.]+", "-", base).lower()
+
+
+def env_facts(conn, series_list):
+    """Довідники для секції залежностей. Будуються раз, а не на кожен модуль.
+
+    Без списку ядра `base` і `account` потрапили б у «невідоме», і сторінка
+    виглядала б так, ніби половина залежностей загубилась (ops/inbox/0016 A).
+    """
+    cur = conn.cursor()
+    core = {s: set() for s in series_list}
+    cur.execute("SELECT series, name FROM core_addons")
+    for r in cur.fetchall():
+        core.setdefault(r["series"], set()).add(r["name"])
+
+    cur.execute("SELECT series, image FROM series_image")
+    img_of = {r["series"]: r["image"] for r in cur.fetchall()}
+    for s in series_list:
+        img_of.setdefault(s, f"odoo:{s}")
+
+    cur.execute("SELECT image_tag, kind, name FROM image_packages")
+    pkgs = {}
+    for r in cur.fetchall():
+        pkgs.setdefault((r["image_tag"], r["kind"]), set()).add(norm_pkg(r["name"]))
+    in_image = {s: {k: pkgs.get((img_of[s], k), set()) for k in ("python", "bin")}
+                for s in series_list}
+
+    # Зворотні залежності: скільки модулів цієї ж серії залежать від цього.
+    # Для мейнтейнера це відповідь на «чи варто це портувати».
+    cur.execute("""SELECT series, d AS name, count(*) c
+                   FROM modules, unnest(depends) d
+                   WHERE depends IS NOT NULL GROUP BY 1,2""")
+    rev = {(r["series"], r["name"]): r["c"] for r in cur.fetchall()}
+    return {"core": core, "in_image": in_image, "img_of": img_of, "rev": rev}
+
+
+def deps_section(lang, series, row, mods_by_name, facts):
+    """«Depends on» зі станом кожної залежності НА ЦІЙ САМІЙ серії.
+
+    Саме стан на тій серії, яку читач зараз дивиться, робить секцію
+    діагностичною, а не декоративною: модуль не може працювати на 19.0, якщо
+    його залежності на 19.0 немає. Наш власний статус `dep` перетворюється з
+    вироку на пояснення.
+    """
+    t = T[lang]
+    deps = row.get("depends")
+    if deps is None:
+        return (f'<h2>{t["dep_h"]}</h2>'
+                f'<p class="mut">{t["dep_unknown_manifest"]}</p>')
+    if not deps:
+        return f'<h2>{t["dep_h"]}</h2><p class="mut">{t["dep_none"]}</p>'
+
+    core = facts["core"].get(series, set())
+    rows, blocking = [], []
+    for d in sorted(deps):
+        if d in core:
+            rows.append(f'<tr><td>{html.escape(d)}</td><td class="mut">{t["dep_core"]}</td>'
+                        f'<td class="mut">{t["dep_core_note"]}</td></tr>')
+            continue
+        other = mods_by_name.get((series, d))
+        if not other:
+            rows.append(f'<tr><td>{html.escape(d)}</td>'
+                        f'<td class="mut">{chip("not_verifiable", lang)}</td>'
+                        f'<td class="mut">{t["dep_absent"].format(s=series)}</td></tr>')
+            # auto_install-модулі не блокують: вони ставляться самі за наявності
+            # інших, і їхня відсутність означає інше (ops/inbox/0016 E4).
+            blocking.append(d)
+            continue
+        st, status = derive_state(dict(other, in_scope=series in TESTED_SERIES))
+        when = other["run_at"].strftime("%Y-%m-%d") if other.get("run_at") else ""
+        rows.append(
+            f'<tr><td><a href="{loc(lang, f"/m/{other["repo"]}/{d}/")}">{html.escape(d)}</a></td>'
+            f'<td>{chip(status if st == "verified" else st, lang)}</td>'
+            f'<td class="mut">{when}</td></tr>')
+
+    head = ""
+    if blocking:
+        head = (f'<p class="lead">'
+                f'{t["dep_blocked"].format(n=len(blocking), m=len(deps), s=series)} '
+                f'<b>{html.escape(", ".join(blocking[:4]))}</b>.</p>')
+    return (f'<h2>{t["dep_h"]}</h2>{head}'
+            f'<table><tr><th>{t["dep_col"]}</th><th>{t["m_status"]}</th>'
+            f'<th>{t["dep_when"]}</th></tr>{"".join(rows)}</table>')
+
+
+def ext_deps_section(lang, series, row, facts):
+    """Зовнішні залежності з позначкою, чи є вони в НАШОМУ образі.
+
+    Це те, що робить статус `env` зрозумілим замість загадкового: читач бачить
+    не «щось не так із середовищем», а конкретний пакет, якого бракує.
+    """
+    t = T[lang]
+    ext = row.get("ext_deps") or {}
+    if not isinstance(ext, dict) or not any(ext.get(k) for k in ("python", "bin")):
+        return ""
+    have = facts["in_image"].get(series, {})
+    out = []
+    for kind in ("python", "bin"):
+        for name in (ext.get(kind) or []):
+            ok = norm_pkg(name) in have.get(kind, set())
+            mark = t["dep_in_image"] if ok else t["dep_not_in_image"]
+            cls = "muted" if ok else "serious"
+            out.append(f'<tr><td>{kind}</td><td>{html.escape(str(name))}</td>'
+                       f'<td class="c {cls}">{mark}</td></tr>')
+    if not out:
+        return ""
+    return (f'<h2>{t["ext_h"]}</h2>'
+            f'<p class="mut">{t["ext_note"].format(img=html.escape(facts["img_of"].get(series, "")))}</p>'
+            f'<table><tr><th>{t["ext_kind"]}</th><th>{t["ext_pkg"]}</th>'
+            f'<th>{t["ext_state"]}</th></tr>{"".join(out)}</table>')
+
+
 def meta_of(v, series):
     """Метадані модуля з найновішої серії, де манифест реально розібрано.
 
@@ -588,6 +750,8 @@ def fetch(conn):
       SELECT m.repo, m.module, m.series, m.head_sha, m.last_commit,
              m.availability, m.installable, m.category, m.vendors, m.is_oca,
              m.license, m.summary, m.manifest_version, m.auto_install, m.application,
+             m.depends, m.ext_deps, m.last_module_commit, m.commits_12m,
+             m.top_authors, m.files_count,
              r.status, r.cause, r.detail, r.log_tail, r.created_at AS run_at,
              r.duration_ms, r.latest_version
       FROM modules m
@@ -749,7 +913,7 @@ document.querySelectorAll('#tbl th[data-sort]').forEach(th=>{
     }
 
 
-def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd):
+def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd, bd_all):
     t = T[lang]
     newest = series[-1]
     prev = series[-2] if len(series) > 1 else None
@@ -781,27 +945,38 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, b
                   f'<div class="v">{pct:.1f}%</div>'
                   f'<div class="n">{t["tile_still"].format(n=len(gap))}</div></div>')
 
-    # Смуга: поки прогонів немає — розрив портування, а не статуси install.
-    # Кольори нейтральні: «не перенесено» не є помилкою, тому статусна палітра
-    # (зелений/жовтий/червоний) тут не використовується.
-    if tested:
-        seg = "".join(
-            f'<div style="flex:{c};background:var(--{STATUS_CLS.get(s, STATUS_CLS[None])[1]})">{c}</div>'
-            for s, c in sorted(counts.items(), key=lambda x: -x[1]) if s)
-        leg = "".join(
-            f'<span><i class="sw" style="background:var(--{STATUS_CLS.get(s, STATUS_CLS[None])[1]})"></i>'
-            f'{STATUS_CLS.get(s, STATUS_CLS[None])[0]} {st_label(s, lang)} — {c}</span>'
-            for s, c in sorted(counts.items(), key=lambda x: -x[1]) if s)
-        bar_h = t["status_h"].format(s=newest)
-    else:
-        np_, p_ = len(gap), len(ported)
-        seg = (f'<div style="flex:{p_};background:var(--ported)">{p_}</div>'
-               f'<div style="flex:{np_};background:var(--notported)">{np_}</div>')
-        leg = (f'<span><i class="sw" style="background:var(--ported)"></i>'
-               f'→ {t["gap_ported"].format(b=newest)} — {p_}</span>'
-               f'<span><i class="sw" style="background:var(--notported)"></i>'
-               f'— {t["gap_not"]} — {np_}</span>')
-        bar_h = t["gap_h"].format(a=prev, b=newest)
+    # Одна смуга на серію, під однією шкалою. Серія, якої ми не проганяли,
+    # отримує ЯВНУ смугу «не охоплено», а не порожнє місце: відсутність даних
+    # це теж стан, і показати його чесніше, ніж приховати (ops/inbox/0017 C).
+    # Кожна смуга підписана своїм знаменником у тому ж рядку.
+    ORDER = ["ok", "warn", "dep", "env", "fail", "timeout",
+             "not_installable", "pending", "out_of_scope"]
+    bars = []
+    for s in series:
+        b = bd_all.get(s, {})
+        total = b.get("total", 0) or 1
+        segs, parts = [], []
+        for key in ORDER:
+            n = b.get(key, 0)
+            if not n:
+                continue
+            cls = STATUS_CLS.get(key, STATUS_CLS[None])[1]
+            segs.append(f'<div style="flex:{n};background:var(--{cls})" '
+                        f'title="{st_label(key, lang)}: {n}">{n if n / total > .04 else ""}</div>')
+            parts.append(f'<span><i class="sw" style="background:var(--{cls})"></i>'
+                         f'{STATUS_CLS.get(key, STATUS_CLS[None])[0]} '
+                         f'{st_label(key, lang)} — {n}</span>')
+        run = b.get("runnable", 0)
+        ver = b.get("verified", 0)
+        note = (t["bar_note"].format(v=ver, r=run, tot=b.get("total", 0))
+                if run else t["bar_none"].format(tot=b.get("total", 0)))
+        bars.append(f'<h3 class="bh">{s} <span class="mut">· {note}</span></h3>'
+                    f'<div class="bar">{"".join(segs)}</div>'
+                    f'<div class="lg">{"".join(parts)}</div>')
+    seg = ""
+    leg = ""
+    bars_html = "".join(bars)
+    bar_h = t["status_all_h"]
 
     months = (NOW.year - V19_RELEASED.year) * 12 + (NOW.month - V19_RELEASED.month)
     zero = ("Zero" if lang == "en" else "жодний") if not repos_next else str(repos_next)
@@ -832,8 +1007,7 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, b
 <h2>{t['not_h']}</h2><p>{t['not_p']}</p>
 </div>
 <h2>{bar_h}</h2>
-<div class="bar">{seg}</div>
-<div class="lg">{leg}</div>
+{bars_html}
 <p class="mut">{denom_line}</p>
 
 <h2>{t['modules_h']}</h2>
@@ -892,6 +1066,13 @@ def build():
     # «не перенесено» і «не встановлюється» — різні твердження.
     bd = breakdown([dict(v[newest], in_scope=newest in TESTED_SERIES)
                     for v in mods.values() if newest in v])
+    bd_all = {s: breakdown([dict(v[s], in_scope=s in TESTED_SERIES)
+                            for v in mods.values() if s in v]) for s in series}
+    env = env_facts(conn, series)
+    mods_by_name = {}
+    for (repo, mod), v in mods.items():
+        for s in v:
+            mods_by_name[(s, mod)] = v[s]
     vendor_slugs = {}
     for v in mods.values():
         for ven in (meta_of(v, series).get("vendors") or []):
@@ -903,7 +1084,7 @@ def build():
     # ---------- головна ----------
     for lang in LANGS:
         out_path(lang, "index.html").write_text(
-            home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd))
+            home(lang, series, mods, present, ported, gap, counts, tested, repos_next, bd, bd_all))
 
     # ---------- сторінки модулів ----------
     search = []
@@ -942,9 +1123,9 @@ def build():
                             f"<pre>{html.escape(r['log_tail'])}</pre>")
                     break
             meta = meta_of(v, series)
-            facts = ""
+            meta_facts = ""
             if meta.get("summary"):
-                facts += f'<p class="lead">{html.escape(meta["summary"])}</p>'
+                meta_facts += f'<p class="lead">{html.escape(meta["summary"])}</p>'
             bits = []
             if meta.get("category"):
                 bits.append(f'{t["f_cat"]}: <a href="{loc(lang, "/")}?cat='
@@ -956,13 +1137,48 @@ def build():
             if meta.get("license"):
                 bits.append(html.escape(meta["license"]))
             if bits:
-                facts += f'<p class="mut">{" · ".join(bits)}</p>'
+                meta_facts += f'<p class="mut">{" · ".join(bits)}</p>'
+            # Секції йдуть ПІСЛЯ таблиці серій: спершу відповідь (статус),
+            # потім пояснення (залежності, оточення, історія) — ops/inbox/0016 E6.
+            newest_here = next((s for s in reversed(series) if s in v), None)
+            cur_row = v.get(newest_here) or {}
+            extra = ""
+            if newest_here:
+                extra += deps_section(lang, newest_here, cur_row, mods_by_name, env)
+                extra += ext_deps_section(lang, newest_here, cur_row, env)
+                rc = env["rev"].get((newest_here, mod), 0)
+                if rc:
+                    extra += (f'<h2>{t["rev_h"]}</h2><p>'
+                              f'{t["rev_p"].format(n=rc, s=newest_here)}</p>')
+                if cur_row.get("last_module_commit"):
+                    au = ", ".join(cur_row.get("top_authors") or [])
+                    extra += (
+                        f'<h2>{t["git_h"]}</h2><table>'
+                        f'<tr><td>{t["git_last"]}</td><td>'
+                        f'{cur_row["last_module_commit"]:%Y-%m-%d}</td></tr>'
+                        f'<tr><td>{t["git_work"]}</td><td>{cur_row.get("commits_12m") or 0}</td></tr>'
+                        + (f'<tr><td>{t["git_authors"]}</td><td>{html.escape(au)}</td></tr>' if au else "")
+                        + (f'<tr><td>{t["git_files"]}</td><td>{cur_row.get("files_count") or 0}</td></tr>'
+                           if cur_row.get("files_count") else "")
+                        + f'</table><p class="mut">{t["git_note"]}</p>')
+            # Однорядкова матриця модуль × серія: це і є відповідь на питання,
+            # з яким людина прийшла — «на чому це працює». Деталі нижче, у
+            # таблиці; тут — за секунду.
+            mx = ""
+            for s in series:
+                if s in v:
+                    st_, status_ = derive_state(dict(v[s], in_scope=s in TESTED_SERIES))
+                    c = chip(status_ if st_ == "verified" else st_, lang)
+                else:
+                    c = chip(None, lang)
+                mx += f'<div class="mx"><span class="vchip">{s}</span>{c}</div>'
             b = (f'<h1>{mod}</h1><p class="mut">{t["m_in"]} '
                  f'<a href="{loc(lang, f"/r/{repo}/")}">{repo}</a> · '
                  f'<a href="https://github.com/OCA/{repo}">{t["m_source"]}</a></p>'
-                 f'{facts}'
+                 f'{meta_facts}'
+                 f'<div class="mxr">{mx}</div>'
                  f'<table><tr><th>{t["m_series"]}</th><th>{t["m_status"]}</th>'
-                 f'<th>{t["m_details"]}</th></tr>{"".join(cells)}</table>{logs}')
+                 f'<th>{t["m_details"]}</th></tr>{"".join(cells)}</table>{extra}{logs}')
             ld = {"@context": "https://schema.org", "@type": "SoftwareSourceCode",
                   "name": mod, "codeRepository": f"https://github.com/OCA/{repo}",
                   "applicationCategory": "Odoo module", "inLanguage": lang,
@@ -974,7 +1190,6 @@ def build():
                      else f"{mod} — сумісність з версіями Odoo")
             desc = (f"Does {mod} from {repo} install on each Odoo series." if lang == "en"
                     else f"Чи встановлюється модуль {mod} з {repo} на версії Odoo.")
-            newest_here = next((s for s in reversed(series) if s in v), None)
             (d / "index.html").write_text(
                 page(lang, f"/m/{repo}/{mod}/", title, b, desc, ld,
                      noindex=not has_status,
