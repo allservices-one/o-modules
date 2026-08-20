@@ -254,6 +254,20 @@ def process(conn, items):
     finally:
         drop_db(db)
 
+    # Батч, який дав WARN, теж треба ділити. Лог у батчі СПІЛЬНИЙ, тому
+    # попередження одного модуля позначає всі вісім: 19.08.2026 так сталося з
+    # `survey_certification_py3o` (бракує libreoffice) — і `warn` дістався ще
+    # семи невинним модулям з трьох інших репозиторіїв. Той самий клас помилки,
+    # що й «звинуватити чужий модуль у власній проблемі», лише джерело інше.
+    # Warn рідкісний, тому ціна поділу мізерна, а атрибуція стає чесною.
+    if rc == 0 and len(items) > 1 and classify(log, rc, to)[0] == "warn":
+        print(f"  ↯ батч із {len(items)} дав warn — ділю, щоб не приписати всім",
+              flush=True)
+        mid = len(items) // 2
+        process(conn, items[:mid])
+        process(conn, items[mid:])
+        return
+
     if rc == 0 or len(items) == 1:
         base = classify(log, rc, to)
         per = ms // max(1, len(items))

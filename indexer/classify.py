@@ -75,11 +75,14 @@ RULES = [
      "Помилка в XML або представленні: {0}"),
     ("orm_api", r"(unexpected keyword argument '(\w+)'|has no attribute '(\w+)'|TypeError: .{0,80}\(\) (?:missing|takes))",
      "Змінений ORM / Python API: {0}"),
-    ("field_removed", r"(Field .{0,60} does not exist|Unknown field ([\w\.]+)|column \"?(\w+)\"? does not exist)",
+    # `column rc.social_mastodon does not exist` — псевдонім таблиці робить імʼя
+    # складеним, і \w+ його не ловив: 19.08.2026 такий випадок дійшов аж до
+    # «НЕРОЗПІЗНАНО», хоча це найтиповіша несумісність — поле прибрали з версії.
+    ("field_removed", r"(Field .{0,60} does not exist|Unknown field ([\w\.]+)|column \"?([\w.]+)\"? does not exist)",
      "Поле відсутнє в цій версії: {0}"),
     ("access_model", r"(Model .* does not exist|Invalid model name|_inherit .* not found)",
      "Модель відсутня або перейменована"),
-    ("sql_error", r"(psycopg2\.\w+Error|IntegrityError|ProgrammingError)",
+    ("sql_error", r"(psycopg2\.errors\.\w+|psycopg2\.\w+Error|IntegrityError|ProgrammingError)",
      "Помилка SQL при установці"),
     ("py_syntax", r"(SyntaxError|IndentationError)", "Синтаксична помилка python"),
     # "Failed to load registry" присутнє в БУДЬ-ЯКОМУ падінні install, тому це
