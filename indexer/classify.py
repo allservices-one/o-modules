@@ -97,9 +97,32 @@ RULES = [
 # Рядок, який найімовірніше пояснює падіння: останній «Тип: текст» винятку.
 EXC_LINE = re.compile(r"^(?:[\w\.]+\.)?(\w*(?:Error|Exception|Warning)): (.+)$")
 
+# Попередження зараховується модулю, ЛИШЕ якщо воно вказує на його власний код.
+#
+# 20.08.2026: чотири модулі route_planning* дістали «Використовує застарілий
+# API» через рядок `DeprecationWarning: builtin type SwigPyPacked has no
+# __module__ attribute` з `<frozen importlib._bootstrap>`. Це попередження
+# CPython про SWIG-бібліотеку, яку модуль лише імпортує, — про якість коду
+# модуля воно не каже нічого. Підпис на сторінці при цьому читався як докір
+# автору.
+#
+# Тому мало збігу зі словом DeprecationWarning: у тому ж рядку має бути
+# `odoo.addons.<щось>`, тобто попередження мусить показувати на код усередині
+# Odoo. `kpi` таку перевірку проходить чесно:
+#   DeprecationWarning: The model odoo.addons.kpi.models.kpi_threshold ...
+ATTRIBUTABLE = re.compile(r"odoo\.addons\.[\w.]+")
 WARN_PATTERNS = [
     (r"DeprecationWarning|is deprecated", "Використовує застарілий API"),
-    (r"WARNING .*not found in|WARNING .*invalid", "Попередження при завантаженні"),
+]
+
+# Оточення, яке видно навіть при коді виходу 0. Odoo не падає, якщо бракує
+# зовнішньої утиліти для звіту, — воно лише пише WARNING і працює далі. Але це
+# рівно `env`: чогось немає в НАШОМУ образі. Записати таке як warn означало б
+# сказати «модуль використовує застарілий API», що неправда.
+ENV_AT_RC0 = [
+    ("env_binary", r"(?:runtime|binary|executable) is required .{0,120}?"
+                   r"(?:not found|is not found)|not found into the bin path",
+     "Немає системної утиліти в образі"),
 ]
 
 # Рядки, які описують НАШ харнес або рендер README, а не результат install.
@@ -140,9 +163,15 @@ def classify(log: str, returncode: int, timed_out: bool = False):
                 f"Модуль не знайдено в addons-path: {m.group(1).strip()[:160]}")
 
     if returncode == 0:
+        # Спершу оточення: бракує утиліти — це env, а не властивість модуля.
+        for cause, pat, msg in ENV_AT_RC0:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                return "env", cause, msg
         for pat, msg in WARN_PATTERNS:
-            if re.search(pat, text):
-                return "warn", "deprecated", msg
+            for line in text.splitlines():
+                if re.search(pat, line) and ATTRIBUTABLE.search(line):
+                    return "warn", "deprecated", msg
         return "ok", None, None
 
     for cause, pat, tmpl in RULES:

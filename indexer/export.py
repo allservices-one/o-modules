@@ -73,8 +73,8 @@ T = {
                   "which modules to build on."),
         "not_h": "What this is not",
         "not_p": ("An install check, not a functional test — a module can install and still "
-                  "misbehave. Paid modules cannot be installed without a licence, so for "
-                  "those we publish metadata only, clearly marked. Failures caused by a "
+                  "misbehave. Paid Apps Store modules are outside this index entirely: "
+                  "we neither run nor list them. Failures caused by a "
                   "missing Python package in the image are reported as environment "
                   "problems, never as version incompatibility."),
         "search": "Search a module or repository…",
@@ -135,8 +135,8 @@ T = {
                   "хто вибирає модулі під проєкт."),
         "not_h": "Чим це не є",
         "not_p": ("Перевірка install, а не функціональний тест — модуль може встановитися "
-                  "й працювати неправильно. Платні модулі без ліцензії не встановити, для "
-                  "них публікуємо лише метадані й позначаємо це явно. Падіння через "
+                  "й працювати неправильно. Платні модулі Apps Store поза цим індексом "
+                  "повністю: ми їх не проганяємо і не перелічуємо. Падіння через "
                   "відсутній python-пакет в образі позначається як проблема середовища, "
                   "а не як несумісність із версією."),
         "search": "Пошук модуля або репозиторію…",
