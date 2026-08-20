@@ -2,7 +2,7 @@ import os, pathlib
 import psycopg2, psycopg2.extras
 
 ROOT = pathlib.Path(os.environ.get("ROOT", "/srv/modidx"))
-SERIES = os.environ.get("SERIES", "18.0 19.0").split()
+SERIES = os.environ.get("SERIES", "17.0 18.0 19.0").split()
 
 def _password():
     if os.environ.get("PGPASSWORD"):

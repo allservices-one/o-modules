@@ -27,11 +27,18 @@ USER root
 ARG CONSTRAINTS
 COPY requirements-declared.txt /modidx/requirements-declared.txt
 COPY ${CONSTRAINTS} /modidx/constraints.txt
+# --break-system-packages з'явився в pip 23.0. В odoo:17.0 стоїть pip 22.0.2,
+# і з жорстко прописаним прапорцем там ПАДАЮТЬ ВСІ 133 встановлення — образ
+# виходить порожній, але зовні справний. Тому прапорець визначається на місці.
 RUN set -eu; \
     mkdir -p /modidx; : > /modidx/failed.txt; : > /modidx/installed.txt; \
+    PIPF=""; \
+    pip install --help 2>/dev/null | grep -q -- --break-system-packages \
+      && PIPF="--break-system-packages"; \
+    echo "pip: $(pip --version) · прапорці: ${PIPF:-немає}"; \
     while IFS= read -r p; do \
       case "$p" in ''|'#'*) continue;; esac; \
-      if pip install --no-cache-dir --break-system-packages \
+      if pip install --no-cache-dir $PIPF \
            -c /modidx/constraints.txt "$p" >/tmp/pip.log 2>&1; then \
         echo "$p" >> /modidx/installed.txt; \
       else \

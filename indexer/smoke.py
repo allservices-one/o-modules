@@ -45,6 +45,18 @@ def check(image, series):
 
     # 2. Справжня установка `base` у чисту БД. Дорожче, але саме вона доводить,
     #    що образ придатний: імпорт може пройти, а реєстр не зібратися.
+    # Похідний образ, який нічого не поставив, — теж непридатний, хоча `base`
+    # у ньому працює бездоганно: він просто дорівнює базовому. Саме так сталося
+    # з 17.0 — pip 22.0.2 не знає --break-system-packages, усі 133 встановлення
+    # впали, і перевірка «платформа ціла» пропустила порожній образ.
+    r = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh", image,
+         "-c", "test -f /modidx/installed.txt && wc -l < /modidx/installed.txt || echo -"],
+        capture_output=True, text=True, timeout=120)
+    got = (r.stdout or "").strip()
+    if got != "-" and got.isdigit() and int(got) == 0:
+        fails.append("похідний образ не поставив жодного пакета — дорівнює базовому")
+
     db = "smoke_" + uuid.uuid4().hex[:10]
     psql(f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')
     c = psql(f'CREATE DATABASE {db}')
