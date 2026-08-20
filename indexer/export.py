@@ -47,6 +47,9 @@ STATUS_CLS = {
     # (метапакет, залишок _unported), а не поломка.
     "pending": ("·", "muted"), "not_installable": ("◌", "muted"),
     "not_verifiable": ("?", "muted"), "out_of_scope": ("–", "muted"),
+    # «гілки немає» і «гілка є, але серію не проганяємо» — різні твердження,
+    # і плутати їх у матриці означає відповідати не на те питання.
+    "absent": ("×", "muted"),
     None: ("—", "muted"),
 }
 
@@ -389,7 +392,8 @@ def out_path(lang, rel):
 
 
 def st_label(status, lang):
-    if status in ("pending", "not_installable", "not_verifiable", "out_of_scope"):
+    if status in ("pending", "not_installable", "not_verifiable",
+                  "out_of_scope", "absent"):
         return state_label(status, lang)
     key = {"ok": "st_ok", "warn": "st_warn", "dep": "st_dep", "env": "st_env",
            "fail": "st_fail", "timeout": "st_timeout"}.get(status, "st_none")
@@ -1170,7 +1174,7 @@ def build():
                     st_, status_ = derive_state(dict(v[s], in_scope=s in TESTED_SERIES))
                     c = chip(status_ if st_ == "verified" else st_, lang)
                 else:
-                    c = chip(None, lang)
+                    c = chip("absent", lang)
                 mx += f'<div class="mx"><span class="vchip">{s}</span>{c}</div>'
             b = (f'<h1>{mod}</h1><p class="mut">{t["m_in"]} '
                  f'<a href="{loc(lang, f"/r/{repo}/")}">{repo}</a> · '
