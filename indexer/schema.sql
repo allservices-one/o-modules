@@ -43,6 +43,17 @@ ALTER TABLE modules ADD COLUMN IF NOT EXISTS application      boolean;
 ALTER TABLE modules ADD COLUMN IF NOT EXISTS manifest_error   text;   -- чому не розібрали
 ALTER TABLE modules ADD COLUMN IF NOT EXISTS manifest_at      timestamptz;
 
+-- Історія модуля з чекауту. Дата останнього коміту — найсильніший сигнал
+-- покинутості: «остання зміна 2023-04-11» поруч із «немає гілки 19.0» це вже
+-- висновок, а не факт. Коштує один `git log` по теці, без жодного зовнішнього
+-- запиту.
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS last_module_commit timestamptz;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS commits_12m        int;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS top_authors        text[];
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS files_count        int;
+ALTER TABLE modules ADD COLUMN IF NOT EXISTS git_at             timestamptz;
+CREATE INDEX IF NOT EXISTS modules_lastcommit_idx ON modules (series, last_module_commit DESC);
+
 CREATE INDEX IF NOT EXISTS modules_category_idx ON modules (series, category);
 CREATE INDEX IF NOT EXISTS modules_avail_idx    ON modules (availability, installable);
 CREATE INDEX IF NOT EXISTS modules_vendors_idx  ON modules USING gin (vendors);

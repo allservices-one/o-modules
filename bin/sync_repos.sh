@@ -33,10 +33,14 @@ for S in $SERIES; do
   while read -r repo; do
     d="$ROOT/var/repos/$S/$repo"
     if [ -d "$d/.git" ]; then
-      git -C "$d" fetch -q --depth 1 origin "$S" 2>/dev/null && \
+      # --filter=blob:none замість --depth 1: повна історія комітів і дерев без
+      # вмісту файлів. Потрібна для дати останнього коміту МОДУЛЯ (git log по
+      # теці), а вона — найсильніший сигнал покинутості. Коштує ~8% розміру:
+      # 12 MB → 13 MB на репозиторій, перевірено на reporting-engine.
+      git -C "$d" fetch -q --filter=blob:none origin "$S" 2>/dev/null && \
       git -C "$d" reset -q --hard FETCH_HEAD || true
     else
-      git clone -q --depth 1 --single-branch --branch "$S" \
+      git clone -q --filter=blob:none --single-branch --branch "$S" \
         "https://github.com/OCA/$repo" "$d" 2>/dev/null || continue
     fi
     n=$((n+1))
