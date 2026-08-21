@@ -68,6 +68,26 @@ RULES = [
      "Модуль позначений як installable=False"),
 
     # --- справжня несумісність з версією ---
+    # Код модуля потребує новішого Python, ніж ставить офіційний образ серії.
+    # `odoo:16.0` — це Debian 11 і **Python 3.9.2**, а `int | None` в анотації
+    # (PEP 604) обчислюється під час імпорту й вимагає 3.10+; `list[int]`
+    # (PEP 585) — 3.9+. Тобто модуль справді не ставиться на стандартному
+    # оточенні своєї ж серії, і це `fail`, а не наша діра: ми нічого не
+    # знижували, образ офіційний і є еталоном для 16.0.
+    #
+    # Правило потрібне тому, що без нього це падіння доходило до `registry` і
+    # виглядало як «НЕРОЗПІЗНАНО: TypeError: unsupported operand type(s) for |».
+    # Спіймано 21.08.2026 на першій же годині проходу 16.0
+    # (`storage/fs_file_demo`), і на 3 100 модулях під 3.9 воно повторюватиметься.
+    #
+    # Деталь несе НАЗВУ ФАЙЛА, а не лише текст винятку, і це не косметика:
+    # у спійманому випадку впав `fs_attachment/models/fs_file_gc.py`, тобто
+    # ЗАЛЕЖНІСТЬ, а прогін був `fs_file_demo`. Без файла в деталі сторінка
+    # звинувачувала б модуль у чужому коді.
+    ("py_version_syntax",
+     r"unsupported operand type\(s\) for \|: 'type' and"
+     r"|'type' object is not subscriptable",
+     "Код потребує новішого Python, ніж у цій серії: {0}"),
     # assets/OWL перевіряємо ПЕРЕД загальним XML: типова поломка на 17→18→19
     ("assets_owl", r"(web\.assets_\w+|assets_backend|assets_frontend|OwlError|owl\b|template .{0,60} not found)",
      "Зміни в OWL / asset bundle: {0}"),
@@ -197,6 +217,12 @@ def classify(log: str, returncode: int, timed_out: bool = False):
             pick = groups[-1] if groups else (m.group(0) or "")
             if cause == "registry":
                 pick = _exception_line(text) or pick
+            elif cause == "py_version_syntax":
+                # Файл винуватця важливіший за текст винятку: він називає МОДУЛЬ,
+                # чий код упав, а це не обов'язково той, який ми ставили.
+                c = _culprit(text)
+                pick = f"{c} — {_exception_line(text) or ''}".strip(" —") if c \
+                       else (_exception_line(text) or pick)
             detail = tmpl.replace("{0}", pick[:160]) if "{0}" in tmpl else tmpl
             status = {
                 "env_missing_python": "env", "env_binary": "env", "env_db": "env",
@@ -208,6 +234,25 @@ def classify(log: str, returncode: int, timed_out: bool = False):
     last = _exception_line(text) or (
         ([l for l in text.strip().splitlines() if l.strip()][-1:] or [""])[0])
     return "fail", "unknown", last[:300]
+
+
+# Шлях, яким пул адонів змонтований у контейнер (runner.run_install).
+CULPRIT = re.compile(r'File "/mnt/pool/([\w./-]+)", line (\d+)')
+
+
+def _culprit(text: str):
+    """Останній файл З ПУЛУ в трейсбеку → `модуль/шлях.py:рядок`.
+
+    Саме останній: трейсбек іде від `server.py` через `loading.py` до коду, який
+    справді впав, тому найглибший кадр у пулі і є винуватцем. Кадри самого Odoo
+    (`/usr/lib/python3/dist-packages/...`) не беремо — вони однакові в кожному
+    падінні й нічого не називають.
+    """
+    hits = CULPRIT.findall(text)
+    if not hits:
+        return None
+    path, line = hits[-1]
+    return f"{path}:{line}"
 
 
 def _exception_line(text: str):
