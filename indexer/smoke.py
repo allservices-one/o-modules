@@ -36,12 +36,28 @@ def check(image, series):
 
     # 1. Найдешевша перевірка й та, що спіймала б реальну поломку: чи
     #    імпортуються модулі, без яких не завантажується сам base Odoo.
+    #
+    # `import odoo` тут БУЛО ДЕКОРАЦІЄЮ, і це виявилось 21.08.2026 на першій
+    # живій збірці master. З 19.0 в офіційному образі немає
+    # `dist-packages/odoo/__init__.py` — `odoo` став неявним namespace-пакетом
+    # (PEP 420). Такий `import odoo` успішний ЗАВЖДИ, доки існує тека, навіть
+    # якщо всередині немає жодного робочого файла:
+    #     16.0/17.0/18.0 → __init__.py є, hasattr(odoo,'release') = True
+    #     19.0 і master  → __init__.py немає, hasattr = False, import усе одно ок
+    # Тобто рівно на найновішій серії — тій, за якою ми гонимось 24 вересня, —
+    # сторож переставав перевіряти платформу й пропускав би будь-який образ.
+    # `from odoo import release` імпортує СПРАВЖНІЙ підмодуль і працює в обох
+    # випадках; заодно віддає версію, тобто доводить, що в образі саме той Odoo,
+    # на який ми думаємо, що дивимось.
     r = subprocess.run(
         ["docker", "run", "--rm", "--network", "none", "--entrypoint", "sh", image,
-         "-c", "python3 -c 'import OpenSSL, cryptography, lxml, psycopg2, PIL, odoo'"],
+         "-c", "python3 -c 'import OpenSSL, cryptography, lxml, psycopg2, PIL;"
+               " from odoo import release; print(release.version)'"],
         capture_output=True, text=True, timeout=180)
     if r.returncode != 0:
         fails.append("імпорт платформи: " + (r.stderr or r.stdout).strip()[-300:])
+    else:
+        print(f"   платформа: odoo {r.stdout.strip()}", file=sys.stderr)
 
     # 2. Справжня установка `base` у чисту БД. Дорожче, але саме вона доводить,
     #    що образ придатний: імпорт може пройти, а реєстр не зібратися.

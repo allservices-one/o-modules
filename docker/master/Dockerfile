@@ -25,10 +25,16 @@ COPY ${DEB} /tmp/odoo-master.deb
 # `apt install ./file.deb` (не dpkg -i): apt сам дотягне залежності, які майстер
 # оголосив і яких у базовому образі ще немає. Якщо чогось у bookworm немає —
 # збірка ПАДАЄ тут, і це правильно: краще дізнатися 21.08, ніж 24.09.
+#
+# Версію питаємо через `from odoo import release`, а не `odoo.release`. З 19.0 в
+# офіційному образі немає `dist-packages/odoo/__init__.py`: `odoo` став неявним
+# namespace-пакетом (PEP 420), тому `import odoo` успішний завжди, а атрибутів у
+# модуля нуль. Спіймано 21.08.2026 на ПЕРШІЙ живій збірці master — до того
+# mkmaster.sh жодного разу не доходив до цього рядка.
 RUN set -eu; \
     apt-get update; \
     apt-get install -y --no-install-recommends /tmp/odoo-master.deb; \
     rm -rf /var/lib/apt/lists/* /tmp/odoo-master.deb; \
-    python3 -c 'import odoo; print("odoo", odoo.release.version)'
+    python3 -c 'from odoo import release; print("odoo", release.version)'
 LABEL modidx.deb="${DEB}" modidx.deb_url="${DEB_URL}"
 USER odoo
