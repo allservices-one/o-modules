@@ -152,7 +152,31 @@ ENV_AT_RC0 = [
 #   odoo.tools.config — наші прапорці й addons-path ('/mnt/extra-addons' з образу,
 #                       '--without-demo=all' застарів у 19.0)
 #   <string>:N:       — docutils при рендері опису модуля
+#   *.pth           — збій site-скрипта на СТАРТІ інтерпретатора, до нашої задачі
 NOISE = re.compile(r"odoo\.tools\.config|^<string>:\d+:")
+
+# Блок, який python друкує, коли падає .pth-скрипт під час запуску. Він не має
+# стосунку до модуля, який ми ставимо, — і це не теорія.
+#
+# У похідних образах 18.0, 19.0 і master `extendable_pydantic_patcher.pth`
+# падає з `ModuleNotFoundError: No module named 'typing_extensions'`, бо .pth
+# виконується, коли `/usr/lib/python3/dist-packages` ще не в `sys.path`, а
+# constraints зробили pip-встановлення `typing_extensions` у `/usr/local`
+# зайвим («already satisfied» від системного пакета). Сам пакет при цьому
+# ІМПОРТУЄТЬСЯ нормально — перевірено кодом виходу в усіх пʼяти образах.
+#
+# Ціна цього шуму: у `RULES` правило `ModuleNotFoundError: No module named …`
+# стоїть серед перших, а «перший збіг виграє». Тому будь-яке падіння з rc≠0 на
+# цих образах отримувало `env/env_missing_python: typing_extensions` замість
+# власної причини. 21.08.2026 таких рядків знайшлося дев'ять (8 на 18.0, 1 на
+# 19.0) — модулі не були перевірені, а в датасеті стояла вигадана причина.
+#
+# Ріжемо блок цілком, від рядка `Error processing line N of …` до `Remainder of
+# file ignored`, а не лише слово: усередині трейсбек із `File "…"`, `from … import`
+# та `ModuleNotFoundError`, і будь-який із них може збігтися з правилом.
+PTH_NOISE = re.compile(
+    r"^Error processing line \d+ of .*?\n(?:.*?\n)*?\s*Remainder of file ignored\s*$",
+    re.MULTILINE)
 
 # Модуль не знайдено в addons-path — Odoo друкує це і виходить з кодом 0.
 # Тобто install НЕ відбувався, а зовні виглядає як успіх. Це збій харнесу,
@@ -171,11 +195,13 @@ IGNORED = re.compile(r"invalid module names, ignored:\s*(.+)")
 # публікує. Промовчати про справжню зміну гірше, ніж наклепати на модуль.
 RULES_VERSION = hashlib.sha256("\n".join([
     repr(RULES), repr(WARN_PATTERNS), repr(ENV_AT_RC0),
-    ATTRIBUTABLE.pattern, NOISE.pattern, IGNORED.pattern, EXC_LINE.pattern,
+    ATTRIBUTABLE.pattern, NOISE.pattern, PTH_NOISE.pattern, IGNORED.pattern,
+    EXC_LINE.pattern,
 ]).encode()).hexdigest()[:12]
 
 
 def _denoise(log: str) -> str:
+    log = PTH_NOISE.sub("", log)
     return "\n".join(l for l in log.splitlines() if not NOISE.search(l))
 
 

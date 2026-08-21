@@ -988,7 +988,7 @@ def fetch(conn):
              m.depends, m.ext_deps, m.last_module_commit, m.commits_12m,
              m.top_authors, m.files_count,
              r.status, r.cause, r.detail, r.log_tail, r.created_at AS run_at,
-             r.duration_ms, r.latest_version
+             r.duration_ms, r.latest_version, r.odoo_image, r.rules_version
       FROM modules m
       LEFT JOIN latest_runs r ON r.module_id = m.id
       ORDER BY m.repo, m.module, m.series
@@ -1562,7 +1562,16 @@ def build():
                    + [f"{s}_status" for s in series]
                    + [f"{s}_cause" for s in series]
                    + [f"{s}_installable" for s in series]
-                   + [f"{s}_version" for s in series])
+                   + [f"{s}_version" for s in series]
+                   # Образ і дата прогону в КОЖНОМУ рядку. Без них датасет не
+                   # відтворюваний: `/status.json` називає лише поточний образ
+                   # серії, тому модуль, прогнаний до його заміни, виглядав би
+                   # перевіреним на образі, якого тоді не існувало. Для `master`
+                   # це взагалі умова публікації (ops/inbox/2026-08-21T1700):
+                   # лінія розробки щодня інша, і рядок без дати збірки —
+                   # твердження ні про що.
+                   + [f"{s}_image" for s in series]
+                   + [f"{s}_run_date" for s in series])
         for (repo, mod), v in sorted(mods.items()):
             meta = meta_of(v, series)
 
@@ -1581,7 +1590,10 @@ def build():
                        + [(v.get(s) or {}).get("cause") or "" for s in series]
                        + ["" if (v.get(s) or {}).get("installable") is None
                           else int(v[s]["installable"]) for s in series]
-                       + [(v.get(s) or {}).get("latest_version") or "" for s in series])
+                       + [(v.get(s) or {}).get("latest_version") or "" for s in series]
+                       + [(v.get(s) or {}).get("odoo_image") or "" for s in series]
+                       + [(lambda x: f"{x:%Y-%m-%d}" if x else "")((v.get(s) or {}).get("run_at"))
+                          for s in series])
     # schema.org/Dataset — те, на що дивляться і Google Dataset Search, і
     # LLM-краулери. Береться з фактичних даних, а не вписується: temporalCoverage
     # рахується з реальних дат прогонів, тому не старіє й не бреше.

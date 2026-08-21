@@ -145,6 +145,51 @@ def drop_db(name):
     psql(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')
 
 
+# Серія, код якої ми проганяємо на лінії розробки. `master` не гілка OCA (її не
+# існує), а ЦІЛЬ ПРОГОНУ: беремо код цієї серії без змін і ставимо на образ
+# майстра. Тому будь-яка різниця у вердикті за побудовою належить платформі.
+DEV_LINE_SRC = os.environ.get("DEV_LINE_SRC", "19.0")
+
+
+def dev_line_attr(conn, series, module_row, status, cause, detail):
+    """Для серії `master`: відділити «зламала лінія розробки» від «модуль поганий».
+
+    Вимога `ops/inbox/2026-08-21T1700`: на майстері частина падінь буде через
+    незавершені зміни платформи. Якщо їх не відділити, ми публічно звинуватимо
+    чужі модулі в тому, що Odoo ще не дописала — той самий клас помилки, що `env`,
+    тільки дорожчий, бо йдеться про неопубліковану версію.
+
+    Ознака структурна, а не текстова, і саме тому їй можна вірити: ми ставимо
+    **той самий код**, який уже дав `ok` на 19.0. Умови обидві обов'язкові:
+
+      1. на 19.0 цей модуль дав `ok`;
+      2. `head_sha` того прогону дорівнює нашому — інакше чекаут зрушив, код уже
+         не той, і різницю не можна списати на платформу.
+
+    Тоді статус — `env`, а не `fail`. Це не пом'якшення: `env` у нас означає «не
+    вина модуля» і за побудовою НЕ входить у несумісність (CLAUDE.md). Падіння,
+    яке було й на 19.0, лишається як класифіковане — воно справді про модуль.
+    """
+    if series != "master" or status in ("ok", "warn"):
+        return status, cause, detail
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT r.status, r.head_sha FROM latest_runs r
+        JOIN modules m ON m.id = r.module_id
+        WHERE m.repo = %s AND m.module = %s AND m.series = %s
+    """, (module_row["repo"], module_row["module"], DEV_LINE_SRC))
+    ref = cur.fetchone()
+    if not ref or ref["status"] != "ok":
+        return status, cause, detail
+    if ref["head_sha"] and module_row.get("head_sha") \
+            and ref["head_sha"] != module_row["head_sha"]:
+        return status, cause, detail
+    return ("env", "dev_line_regression",
+            f"На {DEV_LINE_SRC} той самий код ставиться ({ref['head_sha'][:12] if ref['head_sha'] else '?'}); "
+            f"на лінії розробки — ні. Різниця належить платформі. "
+            f"Було: {status}/{cause or '-'} · {(detail or '')[:120]}")
+
+
 def record(conn, module_id, series, head_sha, status, cause, detail, log, ms,
            batched, latest_version=None, image=None):
     conn.cursor().execute("""
@@ -285,6 +330,7 @@ def process(conn, items):
                     status, cause = "env", "not_installed_despite_rc0"
                     detail = ("rc=0, але модуль не встановлено: ir_module_module.state="
                               + (st or "запису немає"))
+            status, cause, detail = dev_line_attr(conn, series, m, status, cause, detail)
             record(conn, m["id"], series, m["head_sha"], status, cause, detail, log,
                    per, len(items) > 1, ver, image)
             marks.append(MARK.get(status, "?"))
