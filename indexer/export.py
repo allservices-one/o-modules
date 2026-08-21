@@ -22,6 +22,7 @@ import csv, html, json, os, pathlib, re, shutil, subprocess, sys, urllib.parse, 
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT
 from state import derive_state, label as state_label, breakdown
+import blocking
 from db import SERIES as TESTED_SERIES
 
 SITE = ROOT / "var" / "site"
@@ -121,7 +122,19 @@ T = {
     "en": {
         "lang_name": "EN", "other_name": "УК",
         "nav_methodology": "methodology", "nav_dataset": "dataset",
-        "nav_repos": "repositories",
+        "nav_repos": "repositories", "nav_blocking": "blockers",
+        "bl_h1": "What blocks the migration",
+        "bl_lead": "Modules with no {nxt} branch that other {base} modules depend on. "
+                   "Porting one of these makes its dependents portable.",
+        "bl_ctx": "Of {stuck} modules stuck on {base}, {blocked} ({pct}%) depend on "
+                  "something that has no {nxt} branch. The other {free} are blocked by "
+                  "nothing at all — nobody has ported them.",
+        "bl_needed": "Needed by", "bl_stuck": "of them stuck",
+        "bl_alone": "unblocked by this alone", "bl_auto": "auto_install",
+        "bl_commit": "Last commit",
+        "bl_note": "Direct dependencies only; Odoo core modules excluded; auto_install "
+                   "modules counted separately. \u00ab" "unblocked by this alone\u00bb counts "
+                   "dependents for which this module is the only missing dependency.",
         "ix_repos_h": "All repositories", "ix_vendors_h": "All vendors",
         "ix_repos_intro": "Every OCA repository in the index, with how many of its "
                           "modules have an install verdict.",
@@ -215,7 +228,19 @@ T = {
     "uk": {
         "lang_name": "УК", "other_name": "EN",
         "nav_methodology": "методологія", "nav_dataset": "датасет",
-        "nav_repos": "репозиторії",
+        "nav_repos": "репозиторії", "nav_blocking": "блокувальники",
+        "bl_h1": "Що блокує міграцію",
+        "bl_lead": "Модулі без гілки {nxt}, від яких залежать інші модулі {base}. "
+                   "Перенести такий — і його залежні стають переносними.",
+        "bl_ctx": "Із {stuck} модулів, що застрягли на {base}, {blocked} ({pct}%) залежать "
+                  "від чогось без гілки {nxt}. Решту {free} не тримає ніщо — їх просто "
+                  "ніхто не переніс.",
+        "bl_needed": "Потрібен", "bl_stuck": "з них застрягло",
+        "bl_alone": "розблокує сам", "bl_auto": "auto_install",
+        "bl_commit": "Останній коміт",
+        "bl_note": "Лише прямі залежності; модулі ядра Odoo виключені; auto_install "
+                   "рахуються окремо. «Розблокує сам» — це залежні, для яких цей модуль "
+                   "є ЄДИНОЮ відсутньою залежністю.",
         "ix_repos_h": "Усі репозиторії", "ix_vendors_h": "Усі вендори",
         "ix_repos_intro": "Кожен репозиторій OCA в індексі та скільки його модулів "
                           "мають вердикт прогону.",
@@ -588,6 +613,7 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False, feed="/fee
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>{CSS}</style>{ld}</head><body><div class="w">
 <nav><a class="brand" href="{loc(lang, '/')}">{MARK}{TITLE}</a>
+<a href="{loc(lang, '/blocking/')}">{t['nav_blocking']}</a>
 <a href="{loc(lang, '/r/')}">{t['nav_repos']}</a>
 <a href="{loc(lang, '/methodology.html')}">{t['nav_methodology']}</a>
 <a href="{loc(lang, '/data/')}">{t['nav_dataset']}</a>
@@ -1712,6 +1738,65 @@ Modules indexed: {len(mods)}. Tested: {tested}. Series: {', '.join(series)}.
 Independent project. Not affiliated with Odoo S.A. or the Odoo Community Association.
 """)
 
+    # ---------- /blocking/: рейтинг блокувальників міграції ----------
+    #
+    # `ops/inbox/2026-08-21T1600b` B. Це не «65% не перенесено» — та цифра лише
+    # констатує. Тут названі модулі, через які міграція інших НЕМОЖЛИВА, а не
+    # просто не зроблена, і поруч стоїть число, яке робить рейтинг планом роботи:
+    # скільком залежним цей модуль є ЄДИНОЮ відсутньою залежністю.
+    #
+    # Контекстний рядок над таблицею обов'язковий. Без нього сторінка читається
+    # як «уся проблема — це двадцять модулів», тоді як 70,6% застряглих не
+    # заблоковані нічим: їх просто ніхто не переніс. Це сильніший факт, ніж сам
+    # рейтинг, і замовчати його означало б перебільшити роль залежностей.
+    BL_BASE, BL_NEXT = "18.0", "19.0"
+    bl_rows = blocking.rank(conn, BL_BASE, BL_NEXT, 30)
+    bl_tot = blocking.totals(conn, BL_BASE, BL_NEXT)
+    bl_stuck = bl_tot["stuck_total"] or 0
+    bl_blocked = bl_tot["stuck_blocked"] or 0
+    for lang in LANGS:
+        t_ = T[lang]
+        rws = "".join(
+            f'<tr><td><a href="{loc(lang, f"/m/{r["repo"]}/{r["module"]}/")}">'
+            f'{r["module"]}</a> <span class="mut">{r["repo"]}</span></td>'
+            f'<td>{r["needed_by"]}</td><td>{r["needed_by_stuck"]}</td>'
+            f'<td><b>{r["unblocks_alone"]}</b></td>'
+            f'<td>{r["auto_install_deps"] or ""}</td>'
+            f'<td>{r["last_commit"]:%Y-%m-%d}</td></tr>'
+            if r["last_commit"] else
+            f'<tr><td><a href="{loc(lang, f"/m/{r["repo"]}/{r["module"]}/")}">'
+            f'{r["module"]}</a> <span class="mut">{r["repo"]}</span></td>'
+            f'<td>{r["needed_by"]}</td><td>{r["needed_by_stuck"]}</td>'
+            f'<td><b>{r["unblocks_alone"]}</b></td>'
+            f'<td>{r["auto_install_deps"] or ""}</td><td>—</td></tr>'
+            for r in bl_rows)
+        out_path(lang, "blocking").mkdir(parents=True, exist_ok=True)
+        out_path(lang, "blocking/index.html").write_text(page(
+            lang, "/blocking/", f"{t_['bl_h1']} — {TITLE}",
+            f'<h1>{t_["bl_h1"]}</h1>'
+            f'<p class="lead">{t_["bl_lead"].format(base=BL_BASE, nxt=BL_NEXT)}</p>'
+            f'<p>{t_["bl_ctx"].format(base=BL_BASE, nxt=BL_NEXT, stuck=bl_stuck, blocked=bl_blocked, free=bl_stuck - bl_blocked, pct=f"{100.0 * bl_blocked / max(bl_stuck, 1):.1f}")}</p>'
+            f'<table><tr><th>{t_["col_module"]}</th><th>{t_["bl_needed"]}</th>'
+            f'<th>{t_["bl_stuck"]}</th><th>{t_["bl_alone"]}</th>'
+            f'<th>{t_["bl_auto"]}</th><th>{t_["bl_commit"]}</th></tr>{rws}</table>'
+            f'<p class="mut">{t_["bl_note"]}</p>'
+            f'<p class="mut"><a href="/data/blocking.csv">blocking.csv</a></p>',
+            t_["bl_lead"].format(base=BL_BASE, nxt=BL_NEXT)))
+
+    # Повний рейтинг у датасет — не лише 30 рядків зі сторінки: саме на нього
+    # посилатимуться, і обрізати його до показаного означало б віддати картинку
+    # замість даних.
+    with open(SITE / "data" / "blocking.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["base_series", "next_series", "module", "repo", "needed_by",
+                    "needed_by_stuck", "unblocks_alone", "auto_install_deps",
+                    "last_commit"])
+        for r in blocking.rank(conn, BL_BASE, BL_NEXT):
+            w.writerow([BL_BASE, BL_NEXT, r["module"], r["repo"], r["needed_by"],
+                        r["needed_by_stuck"], r["unblocks_alone"],
+                        r["auto_install_deps"],
+                        r["last_commit"].date().isoformat() if r["last_commit"] else ""])
+
     # ---------- покажчики /r/ і /v/: маршрут, незалежний від sitemap ----------
     #
     # До 21.08.2026 `/r/`, `/v/` і `/m/` віддавали 404. Наслідок: єдиний спосіб
@@ -1840,7 +1925,8 @@ Independent project. Not affiliated with Odoo S.A. or the Odoo Community Associa
     # `/r/` і `/v/` — покажчики, а не сутності, тому їхній lastmod = дата
     # генерації: вони змінюються щоразу, коли змінюється склад індексу.
     static_pages = [(pth, NOW.date())
-                    for pth in ("/", "/methodology.html", "/data/", "/r/", "/v/")]
+                    for pth in ("/", "/methodology.html", "/data/", "/r/", "/v/",
+                                "/blocking/")]
     groups = {
         "pages": static_pages,
         "modules": [e for e in sm if e[0].startswith("/m/")],

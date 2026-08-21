@@ -92,6 +92,10 @@ else
   echo "УВАГА: не вдалося вигрузити series_snapshots — датасет НЕ оновлено"
 fi
 [ -s var/site/data/modules.csv ] && cp var/site/data/modules.csv data/modules.csv
+# Рейтинг блокувальників (indexer/blocking.py) — саме та таблиця, на яку
+# посилатимуться в публікації, тому вона мусить бути в датасеті цілком, а не
+# лише 30 показаними рядками.
+[ -s var/site/data/blocking.csv ] && cp var/site/data/blocking.csv data/blocking.csv
 
 # Комітимо ТІЛЬКИ data/ і саме через pathspec: у робочому дереві сервера цілком
 # може лежати незакінчена правка сесії, і нічне обслуговування не має права
