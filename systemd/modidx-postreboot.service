@@ -1,0 +1,24 @@
+[Unit]
+Description=Module Health Index — чек-лист після перезавантаження (один раз)
+# Docker мусить не просто запуститися, а піднятись до стану, коли контейнери з
+# restart-політикою вже стартували; звідси і затримка нижче.
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+# Контейнерам треба дати піднятись і пройти healthcheck. 40 с — це два цикли
+# healthcheck Postgres із запасом; менше дає «unhealthy» на здоровому стенді.
+ExecStartPre=/bin/sleep 40
+ExecStart=/bin/bash /srv/modidx/bin/postreboot.sh
+# Самознезброєння: юніт потрібен рівно один раз. Лишити його enabled означає
+# збирати чек-лист після кожного ребуту назавжди — і одного дня переплутати
+# свіжий файл зі старим.
+ExecStartPost=/usr/bin/systemctl disable modidx-postreboot.service
+StandardOutput=append:/srv/modidx/var/logs/postreboot.log
+StandardError=append:/srv/modidx/var/logs/postreboot.log
+
+[Install]
+WantedBy=multi-user.target
