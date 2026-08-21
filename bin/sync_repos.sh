@@ -3,7 +3,11 @@
 # depth 1, single-branch: ~2-3 GB на серію. Повторний запуск робить git fetch, не переклонює.
 set -euo pipefail
 ROOT="${ROOT:-/srv/modidx}"
-SERIES="${SERIES:-18.0 19.0}"
+# Замовчування мусить збігатися з SERIES у indexer/db.py: цей скрипт викликає
+# modidx-harvest.service як ExecStartPost, і серія, якої тут немає, щоночі
+# лишається зі старими чекаутами — тобто manifests і gitmeta читають
+# позавчорашній стан, а прогони йдуть на несинхронізованому пулі.
+SERIES="${SERIES:-16.0 17.0 18.0 19.0}"
 LIST="$ROOT/data/oca_repos.txt"
 NOT_MODULE_DIRS="setup docs tests template"
 

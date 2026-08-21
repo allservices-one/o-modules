@@ -2,7 +2,12 @@ import os, pathlib
 import psycopg2, psycopg2.extras
 
 ROOT = pathlib.Path(os.environ.get("ROOT", "/srv/modidx"))
-SERIES = os.environ.get("SERIES", "17.0 18.0 19.0").split()
+# Серії, які індекс ВЕДЕ: черга (enqueue), метадані (manifests, gitmeta) і
+# `in_scope` на сайті (export). Додати серію тут можна лише після того, як у
+# `series_image` є перевірений образ і існує шаблонна БД `tmpl_XX0` — інакше
+# черга наповниться задачами, які нема на чому виконати.
+# 16.0 додано 21.08.2026: образ modidx/odoo:16.0-deps-20260821 (smoke ✓), tmpl_160.
+SERIES = os.environ.get("SERIES", "16.0 17.0 18.0 19.0").split()
 
 def _password():
     if os.environ.get("PGPASSWORD"):
