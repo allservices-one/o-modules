@@ -10,7 +10,7 @@ BATCH>1 вмикає батч-режим із бісекцією: 8 модулі
 import os, re, socket, subprocess, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from db import connect, ROOT, _password
-from classify import classify, tail
+from classify import classify, tail, RULES_VERSION
 
 WORKER = f"{socket.gethostname()}/{os.getpid()}"
 BATCH = int(os.environ.get("BATCH", "1"))
@@ -149,11 +149,12 @@ def record(conn, module_id, series, head_sha, status, cause, detail, log, ms,
            batched, latest_version=None, image=None):
     conn.cursor().execute("""
         INSERT INTO runs (module_id, series, head_sha, status, cause, detail,
-                          log_tail, duration_ms, odoo_image, batched, latest_version)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                          log_tail, duration_ms, odoo_image, batched, latest_version,
+                          rules_version)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """, (module_id, series, head_sha, status, cause, detail,
           tail(log) if status not in ("ok",) else None, ms,
-          image or f"odoo:{series}", batched, latest_version))
+          image or f"odoo:{series}", batched, latest_version, RULES_VERSION))
 
 
 def reclaim(conn):

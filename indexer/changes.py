@@ -12,6 +12,18 @@
 `seeded=true` і у фіди не потрапляє. Без цього перший підписник отримав би
 кілька тисяч записів «новий: verified» і відписався б — класичний спосіб
 зіпсувати фід у день запуску.
+
+**Стенд.** Друга причина не публікувати зміну: змінилися МИ, а не модуль.
+Між двома послідовними прогонами могли поїхати образ (`runs.odoo_image`) або
+правила класифікатора (`runs.rules_version`) — тоді різниця в статусі наша, і
+рядок іде з `bench=true`, повз стрічки. Спіймано ззовні (ops/inbox/0019 A):
+перезбірка образу 18.0 з відсутніми python-пакетами дала 41 запис `env → ok`,
+а правка правила атрибуції `warn` із 0018 — ще 5. Публічно це читалося як
+«модуль став сумісним 20 серпня», чого не було: жоден із 46 модулів не
+змінився, `head_sha` у всіх той самий.
+
+Обидва прапорці лишають рядок у таблиці, бо на ньому тримається порівняння
+«попередній стан» для наступного прогону. Фільтрує їх лише запит фіда.
 """
 import os, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
@@ -40,12 +52,25 @@ def main():
     queue_left = cur.fetchone()["c"]
     seeding = seeded_at is None or queue_left > 0
 
-    total = 0
+    total = bench = 0
     while True:
+        # LATERAL — попередній прогін цієї ж пари (модуль, серія): його стенд
+        # порівнюємо зі стендом поточного. Саме попередній ПРОГІН, а не прогін
+        # позаду попередньої зміни: зміну стану ми й виявляємо між двома
+        # послідовними прогонами, тому й стенд треба порівнювати той самий.
         cur.execute("""
             SELECT r.id, r.module_id, r.series, r.status, r.created_at,
-                   m.availability, m.installable
+                   r.odoo_image, r.rules_version,
+                   m.availability, m.installable,
+                   p.id AS prev_run, p.odoo_image AS prev_image,
+                   p.rules_version AS prev_rules
             FROM runs r JOIN modules m ON m.id = r.module_id
+            LEFT JOIN LATERAL (
+                SELECT q.id, q.odoo_image, q.rules_version FROM runs q
+                WHERE q.module_id = r.module_id AND q.series = r.series
+                  AND q.id < r.id
+                ORDER BY q.id DESC LIMIT 1
+            ) p ON true
             WHERE r.id > %s
             ORDER BY r.id
             LIMIT %s
@@ -74,11 +99,21 @@ def main():
                 cursor = r["id"]
                 continue                      # нічого не змінилось — не подія
 
+            # Стенд поїхав між двома прогонами → зміна наша, не модуля.
+            # NULL порівнюється як значення: у прогонів до появи rules_version
+            # вона порожня, тому перший прохід після цієї правки чесно
+            # позначиться як зміна стенду. Це навмисно консервативно.
+            stand = (r["prev_run"] is not None
+                     and (r["prev_image"], r["prev_rules"])
+                         != (r["odoo_image"], r["rules_version"]))
+            if stand:
+                bench += 1
+
             cur.execute("""
                 INSERT INTO state_changes
                   (module_id, series, state_old, state_new, status_old, status_new,
-                   run_id, at, seeded)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   run_id, at, seeded, bench)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (run_id) DO NOTHING
             """, (r["module_id"], r["series"],
                   prev["state_new"] if prev else None,
@@ -86,7 +121,7 @@ def main():
                   prev["status_new"] if prev else None,
                   new_status,
                   r["id"], r["created_at"],
-                  seeding or prev is None))
+                  seeding or prev is None, stand))
             total += 1
             cursor = r["id"]
 
@@ -99,11 +134,12 @@ def main():
         print("  сівбу завершено: черга порожня, далі зміни йдуть у фіди",
               file=sys.stderr)
 
-    cur.execute("SELECT count(*) c FROM state_changes WHERE NOT seeded")
+    cur.execute("SELECT count(*) c FROM state_changes "
+                "WHERE NOT seeded AND NOT bench")
     live = cur.fetchone()["c"]
     print(f"змін записано: {total} (сівба: {'так' if seeding else 'ні'}, "
-          f"у черзі {queue_left}) · у фідах: {live} · курсор: {cursor} · "
-          f"{time.time()-t0:.1f}s",
+          f"зміни стенду: {bench}, у черзі {queue_left}) · у фідах: {live} · "
+          f"курсор: {cursor} · {time.time()-t0:.1f}s",
           file=sys.stderr)
     conn.close()
 

@@ -468,7 +468,7 @@ def slug(s):
     return out.strip("-") or "x"
 
 
-def atom(entries, title, self_path, feed_id, lang="en"):
+def atom(entries, title, self_path, feed_id, lang="en", fallback=None):
     """Atom 1.0. Не RSS 2.0: там немає нормальних `id` і `updated`, а саме на
     них тримається вся коректність фіда.
 
@@ -479,9 +479,11 @@ def atom(entries, title, self_path, feed_id, lang="en"):
     * `<updated>` — час ПРОГОНУ, не час генерації. Інакше кожна регенерація
       сайту помічає весь фід як непрочитаний.
     * `<updated>` самого фіда — час найсвіжішої події, а не `now()`, з тієї ж
-      причини.
+      причини. Це стосується й ПОРОЖНЬОГО фіда: `now()` там означав би, що
+      читалка щогодини бачить зміну й приходить по нічого. `fallback` — час
+      останньої зміни стану взагалі, включно з тими, що у стрічки не пішли.
     """
-    upd = max((e["at"] for e in entries), default=NOW)
+    upd = max((e["at"] for e in entries), default=(fallback or NOW))
     items = []
     for e in entries:
         items.append(
@@ -505,14 +507,18 @@ def atom(entries, title, self_path, feed_id, lang="en"):
 
 
 def feed_entries(conn):
-    """Події для фідів: тільки НЕ засіяні зміни, найсвіжіші зверху."""
+    """Події для фідів: найсвіжіші зверху, без сівби і без змін стенду.
+
+    `bench` відсіює зміни, які зробили ми, а не автор модуля: перезбірка образу
+    або правка правил класифікатора (ops/inbox/0019 A, indexer/changes.py).
+    """
     cur = conn.cursor()
     cur.execute("""
         SELECT c.run_id, c.series, c.state_old, c.state_new,
                c.status_old, c.status_new, c.at,
                m.repo, m.module, m.vendors
         FROM state_changes c JOIN modules m ON m.id = c.module_id
-        WHERE NOT c.seeded
+        WHERE NOT c.seeded AND NOT c.bench
         ORDER BY c.at DESC, c.id DESC
         LIMIT %s
     """, (FEED_MAX * 4,))
@@ -576,13 +582,39 @@ def status_json(conn):
     cur.execute("SELECT count(*) c FROM modules")
     total_modules = cur.fetchone()["c"]
 
+    # Образи. Джерело — `series_image`, а не літерал `odoo:{s}`: літерал
+    # називав базові образи від 18.08, тоді як прогони йшли проти похідних із
+    # доставленими залежностями, а 17.0 у розділі не було взагалі, хоча проти
+    # нього прогнано 1 915 модулів (ops/inbox/0019 B). Це єдина машинна заявка
+    # про відтворюваність — вона не має права називати не той образ.
+    cur.execute("SELECT series, image, set_at FROM series_image")
+    tags = {r["series"]: (r["image"], r["set_at"]) for r in cur.fetchall()}
+    # Одного тега на серію все одно не досить: у 18.0 частина ПУБЛІКОВАНИХ
+    # результатів отримана на базовому образі, а частина — на похідному, і
+    # відтворити зріз можна лише знаючи обидва. Рахуємо по latest_runs, тобто
+    # рівно по тих прогонах, які видно на сайті.
+    cur.execute("SELECT series, odoo_image, count(*) c FROM latest_runs "
+                "GROUP BY 1,2 ORDER BY 1,2")
+    used = {}
+    for r in cur.fetchall():
+        used.setdefault(r["series"], {})[r["odoo_image"]] = r["c"]
+
     images = {}
-    for s in ("18.0", "19.0", "20.0"):
-        img = _cmd(["docker", "image", "inspect", f"odoo:{s}",
+    for s in sorted(set(tags) | set(TESTED_SERIES) | set(used) | {"20.0"}):
+        tag, set_at = tags.get(s, (f"odoo:{s}", None))
+        img = _cmd(["docker", "image", "inspect", tag,
                     "--format", "{{.Id}} {{.Created}}"])
+        if not img and s not in tags and s not in used:
+            continue            # серії ще немає — не заповнювати розділ порожнім
+        e = {"tag": tag, "set_at": set_at.isoformat() if set_at else None}
         if img:
             iid, _, created = img.partition(" ")
-            images[s] = {"id": iid[:19], "created": created.strip()[:19]}
+            e["id"], e["created"] = iid[:19], created.strip()[:19]
+        else:
+            e["present"] = False
+        if used.get(s):
+            e["latest_runs_by_image"] = used[s]
+        images[s] = e
 
     du = shutil.disk_usage("/")
     mem_available_mb = None
@@ -1329,21 +1361,27 @@ def build():
     # без листа й без реєстрації. У Tecnativa 328 модулів на 19.0; вони
     # підписуються раз і бачать свої поломки раніше за користувачів.
     events = feed_entries(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT max(at) a FROM state_changes")
+    last_any = cur.fetchone()["a"]
     (SITE / "feed").mkdir(parents=True, exist_ok=True)
     (SITE / "feed" / "vendor").mkdir(parents=True, exist_ok=True)
 
     (SITE / "feed.xml").write_text(atom(
-        events[:FEED_MAX], f"{TITLE} — module state changes", "/feed.xml", "feed"))
+        events[:FEED_MAX], f"{TITLE} — module state changes", "/feed.xml", "feed",
+        fallback=last_any))
 
     for s in series:
         sub = [e for e in events if e["series"] == s][:FEED_MAX]
         (SITE / "feed" / f"{s}.xml").write_text(atom(
-            sub, f"{TITLE} — Odoo {s}", f"/feed/{s}.xml", f"feed/{s}"))
+            sub, f"{TITLE} — Odoo {s}", f"/feed/{s}.xml", f"feed/{s}",
+            fallback=last_any))
 
     for ven, sl in sorted(vendor_slugs.items(), key=lambda kv: kv[1]):
         sub = [e for e in events if ven in e["vendors"]][:FEED_MAX]
         (SITE / "feed" / "vendor" / f"{sl}.xml").write_text(atom(
-            sub, f"{TITLE} — {ven}", f"/feed/vendor/{sl}.xml", f"feed/vendor/{sl}"))
+            sub, f"{TITLE} — {ven}", f"/feed/vendor/{sl}.xml", f"feed/vendor/{sl}",
+            fallback=last_any))
 
     # ---------- сторінки вендорів ----------
     # Потрібні не заради самих сторінок, а щоб фід вендора взагалі можна було

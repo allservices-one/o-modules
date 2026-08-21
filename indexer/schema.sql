@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS runs (
   created_at   timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS latest_version text;
+-- Версія правил класифікатора, якою отриманий цей статус (indexer/classify.py).
+-- Разом із odoo_image це повний опис стенду прогону. Без них не відрізнити
+-- «модуль змінився» від «ми змінили стенд» — і друге їде у фід як перше.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS rules_version text;
 CREATE INDEX IF NOT EXISTS runs_module_idx  ON runs (module_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS runs_series_idx  ON runs (series, created_at DESC);
 CREATE INDEX IF NOT EXISTS runs_status_idx  ON runs (status);
@@ -179,8 +183,14 @@ CREATE TABLE IF NOT EXISTS state_changes (
   seeded     boolean NOT NULL DEFAULT false,
   UNIQUE (run_id)
 );
-CREATE INDEX IF NOT EXISTS state_changes_feed_idx ON state_changes (at DESC)
-  WHERE NOT seeded;
+-- ops/inbox/0019 A: подією фіда є зміна МОДУЛЯ. Якщо між двома послідовними
+-- прогонами змінився стенд — образ або версія правил класифікатора, — різниця
+-- в результаті належить нам: bench=true, і в стрічки рядок не йде. Сам рядок
+-- лишається в таблиці: на ньому тримається порівняння «попередній стан».
+ALTER TABLE state_changes ADD COLUMN IF NOT EXISTS bench boolean NOT NULL DEFAULT false;
+DROP INDEX IF EXISTS state_changes_feed_idx;      -- предикат був лише WHERE NOT seeded
+CREATE INDEX IF NOT EXISTS state_changes_live_idx ON state_changes (at DESC)
+  WHERE NOT seeded AND NOT bench;
 CREATE INDEX IF NOT EXISTS state_changes_mod_idx ON state_changes (module_id, series, at DESC);
 
 -- Куди дійшли при матеріалізації змін. Одна колонка, один рядок: віконна
