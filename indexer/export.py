@@ -29,6 +29,20 @@ NOW = datetime.datetime.now(datetime.timezone.utc)
 BASE = os.environ.get("SITE_BASE", "https://allservices.one")
 TITLE = os.environ.get("SITE_TITLE", "Module Health Index")
 
+# Зворотний зв'язок. Два канали, і порядок не випадковий.
+#
+# GitHub Issues — основний: аудиторія проєкту живе там, історія публічна, і кожне
+# виправлення стає доказом сумлінності замість приватного листування. Це прямо
+# працює на єдину тезу проєкту («факт прогону, а не оцінка вендора»): якщо ми
+# кажемо «покажемо лог або перепрогонимо», то місце, де це видно, мусить бути
+# публічним.
+#
+# Пошта — окремий аліас `hello@`, а НЕ робоча адреса: адреса з публічної
+# сторінки збирається спам-ботами за тижні, а аліас у разі потопу видаляється й
+# заводиться новий без наслідків для решти пошти домену.
+REPO_URL = os.environ.get("REPO_URL", "https://github.com/allservices-one/o-modules")
+CONTACT = os.environ.get("SITE_CONTACT", "hello@allservices.one")
+
 LANGS = ("en", "uk")
 DEFAULT_LANG = "en"
 
@@ -180,6 +194,12 @@ T = {
         "footer_updated": "Data updated {d} UTC",
         "footer_fact": "we publish the install log with a date, not a vendor rating",
         "footer_open": "CSV and JSON are open",
+        "footer_contact": "Questions or a wrong result",
+        "footer_issues": "open an issue",
+        "footer_or": "or",
+        "m_wrong": "Result looks wrong?",
+        "m_wrong_cta": "Tell us — we will show the log or run it again.",
+        "m_wrong_link": "Report a wrong result",
         "independent": ("Independent project. Not affiliated with Odoo S.A. or the "
                         "Odoo Community Association."),
         "st_ok": "Installs", "st_warn": "Installs with warnings",
@@ -264,6 +284,12 @@ T = {
         "footer_updated": "Дані оновлено {d} UTC",
         "footer_fact": "публікуємо факт прогону з логом і датою, не оцінку вендора",
         "footer_open": "CSV і JSON відкриті",
+        "footer_contact": "Питання або хибний результат",
+        "footer_issues": "issue на GitHub",
+        "footer_or": "чи",
+        "m_wrong": "Результат виглядає неправильним?",
+        "m_wrong_cta": "Повідомте — ми покажемо лог або перепрогонимо.",
+        "m_wrong_link": "Повідомити про хибний результат",
         "independent": ("Незалежний проєкт. Не пов'язаний з Odoo S.A. чи Odoo Community "
                         "Association."),
         "st_ok": "Встановлюється", "st_warn": "Із попередженнями",
@@ -305,7 +331,16 @@ this index entirely: we neither run nor list them.</li>
 <li>An install check is not a functional test: a module can install and still misbehave.</li>
 <li>Batch mode: on a mass pass modules are installed in groups; if a group fails, each member
 is retried alone. The dataset records this in the <code>batched</code> field.</li></ul>
-<p>We publish the fact of a run, with its date and log — not a rating of a vendor.</p>""",
+<p>We publish the fact of a run, with its date and log — not a rating of a vendor.</p>
+<h2>Result looks wrong?</h2>
+<p>Tell us — we will show the full log or run the module again. This is not a formality:
+of the first fifteen <code>fail</code> verdicts, nine turned out to be <b>our</b> mistakes
+rather than module incompatibilities, and they were found only because someone opened
+the log.</p>
+<p>The main channel is <a href="{issues}">a GitHub issue</a>: the history is public, and it
+shows that we answer. Every module page carries a link that pre-fills the module, series,
+run date and verdict. By mail: <a href="mailto:{contact}">{contact}</a>.</p>
+<p class="mut">Maintainer, Module Health Index</p>""",
     "uk": """<h2>Як перевіряється модуль</h2>
 <p>Кожен модуль встановлюється в <b>чисту базу</b> відповідної серії Odoo з офіційного образу
 <code>odoo:&lt;серія&gt;</code>, без демо-даних, командою <code>-i &lt;module&gt; --stop-after-init</code>.
@@ -337,7 +372,16 @@ is retried alone. The dataset records this in the <code>batched</code> field.</l
 <li>Install-прогін не є тестом функціональності: модуль може встановитися і працювати неправильно.</li>
 <li>Батч-режим: при масовому проході модулі ставляться групами, при падінні групи кожен
 перевіряється окремо. У даних це позначено полем <code>batched</code>.</li></ul>
-<p>Публікуємо факт прогону з датою і логом, а не оцінку якості вендора.</p>""",
+<p>Публікуємо факт прогону з датою і логом, а не оцінку якості вендора.</p>
+<h2>Результат виглядає неправильним?</h2>
+<p>Повідомте — ми покажемо повний лог або перепрогонимо модуль. Це не формальність:
+з перших пʼятнадцяти вердиктів <code>fail</code> девʼять виявилися <b>нашими</b>
+помилками, а не несумісністю модулів, і знайшлися вони лише тому, що хтось
+відкрив лог.</p>
+<p>Основний канал — <a href="{issues}">issue на GitHub</a>: історія публічна, і видно,
+що ми відповідаємо. На кожній сторінці модуля є посилання, яке вже підставляє модуль,
+серію, дату прогону й вирок. Пошта — <a href="mailto:{contact}">{contact}</a>.</p>
+<p class="mut">Maintainer, Module Health Index</p>""",
 }
 
 # Власний знак: три смуги спадної довжини — рівно та історія, що й у даних.
@@ -469,18 +513,53 @@ def chip(status, lang):
     return f'<span class="c {cls}"><span>{ic}</span>{st_label(status, lang)}</span>'
 
 
+def issue_url(repo, mod, series, status, cause, run_at):
+    """Готове посилання на створення issue з підставленими даними прогону.
+
+    Нуль бекенду: форма означала б динамічний endpoint, спам і код, а GitHub уже
+    вміє приймати `title` і `body` у query.
+
+    Навіщо саме заповнене, а не «напишіть нам»: девʼять із перших пʼятнадцяти
+    `fail` виявилися НАШИМИ помилками, і знайшлися вони лише тому, що хтось
+    відкрив лог. Коли індекс побачать сотні людей, цей канал знайде наступні
+    девʼять швидше за нас — але тільки якщо повідомити коштує один клік і не
+    вимагає згадувати, яка була серія й дата.
+
+    Текст тіла — англійською незалежно від мови сторінки: issue читають і
+    відповідають на нього в одному місці, і мова тіла не мусить залежати від
+    того, з якого мовного дерева людина прийшла.
+    """
+    lines = [f"Module: {repo}/{mod}", f"Series: {series}"]
+    if run_at:
+        lines.append(f"Run date: {run_at:%Y-%m-%d}")
+    lines += [f"Verdict: {status or '-'}/{cause or '-'}",
+              f"Page: {BASE}/m/{repo}/{mod}/", "", "What I expected:", ""]
+    q = urllib.parse.urlencode({
+        "title": f"Wrong result: {mod} on {series}",
+        "body": "\n".join(lines),
+        "labels": "wrong-result",
+    })
+    return f"{REPO_URL}/issues/new?{q}"
+
+
 def page(lang, url, title, body, desc="", jsonld=None, noindex=False, feed="/feed.xml"):
     """Сторінка з canonical на себе і hreflang на обидві мови.
 
-    noindex=True ставить <meta name="robots" content="noindex"> — для сторінок,
-    у яких ще немає жодного install-статусу. Свідомо НЕ через robots.txt і НЕ
-    через заголовок у Caddy: Disallow і noindex взаємно скасовуються (закритий
+    noindex=True ставить <meta name="robots" content="noindex,follow"> — для
+    сторінок, у яких ще немає жодного install-статусу. Свідомо НЕ через robots.txt
+    і НЕ через заголовок у Caddy: Disallow і noindex взаємно скасовуються (закритий
     краулер не прочитає noindex), а Disallow заблокував би GPTBot, тобто основний
     канал проєкту. Правило однакове в обох мовних деревах.
+
+    `follow` обов'язковий і доданий 21.08.2026. Без нього краулер, дійшовши до
+    сторінки без результату, зупинявся: `noindex` за замовчуванням не забороняє
+    переходи, але й не гарантує їх, а саме тонкі сторінки — це вузли, через які
+    видно решту (залежності модуля, сусіди по репозиторію). Виключати сторінку з
+    індексу і водночас обрізати маршрут — дві різні дії, і друга нам не потрібна.
     """
     t = T[lang]
     ld = f'<script type="application/ld+json">{json.dumps(jsonld, ensure_ascii=False)}</script>' if jsonld else ""
-    ni = '<meta name="robots" content="noindex">' if noindex else ""
+    ni = '<meta name="robots" content="noindex,follow">' if noindex else ""
     other = "uk" if lang == "en" else "en"
     alts = "".join(
         f'<link rel="alternate" hreflang="{lg}" href="{BASE}{loc(lg, url)}">' for lg in LANGS
@@ -504,6 +583,8 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False, feed="/fee
 <p class="mut" style="margin-top:40px;border-top:1px solid var(--l);padding-top:14px">
 {t['footer_updated'].format(d=f'{NOW:%Y-%m-%d %H:%M}')} · {t['footer_fact']} ·
 <a href="{loc(lang, '/data/')}">{t['footer_open']}</a></p>
+<p class="mut">{t['footer_contact']}: <a href="{REPO_URL}/issues">{t['footer_issues']}</a>
+{t['footer_or']} <a href="mailto:{CONTACT}">{CONTACT}</a></p>
 <p class="ind">{t['independent']}</p></div></body></html>"""
 
 
@@ -1213,6 +1294,12 @@ def build():
     for r in rows:
         mods.setdefault((r["repo"], r["module"]), {})[r["series"]] = r
 
+    # Маршрут для краулера. Збираємо (шлях, дата останнього прогону) під час
+    # генерації, а не вгадуємо після: критерій входження в карту мусить бути
+    # ТИМ САМИМ, що й критерій `noindex` на сторінці, інакше карта обіцяє те, що
+    # сторінка забороняє. Тому append стоїть рівно там, де рахується has_status.
+    sm = []
+
     newest = series[-1]
     prev = series[-2] if len(series) > 1 else None
     present = {s: sum(1 for v in mods.values() if s in v) for s in series}
@@ -1252,6 +1339,14 @@ def build():
     search = []
     for (repo, mod), v in mods.items():
         has_status = any((v.get(s) or {}).get("status") for s in series)
+        # lastmod = дата останнього прогону цього модуля. Саме вона, а не дата
+        # генерації: інакше кожен щогодинний export кричав би краулеру «усі
+        # 7 000 сторінок змінились», і повторний обхід приходив би тоді, коли
+        # нічого не сталося, замість того дня, коли вердикт справді змінився.
+        if has_status:
+            runs_at = [ (v[s] or {}).get("run_at") for s in series if v.get(s) ]
+            runs_at = [x for x in runs_at if x]
+            sm.append((f"/m/{repo}/{mod}/", max(runs_at) if runs_at else None))
         for lang in LANGS:
             t = T[lang]
             cells = []
@@ -1334,13 +1429,22 @@ def build():
                 else:
                     c = chip("absent", lang)
                 mx += f'<div class="mx"><span class="vchip">{s}</span>{c}</div>'
+            # Заповнене посилання будуємо по НАЙНОВІШІЙ серії з вердиктом:
+            # саме її людина бачить першою і саме про неї сперечатиметься.
+            rep_s = next((s for s in reversed(series)
+                          if (v.get(s) or {}).get("status")), series[-1])
+            rep_r = v.get(rep_s) or {}
+            wrong = (f'<p class="mut"><strong>{t["m_wrong"]}</strong> {t["m_wrong_cta"]} '
+                     f'<a href="{issue_url(repo, mod, rep_s, rep_r.get("status"), rep_r.get("cause"), rep_r.get("run_at"))}"'
+                     f' rel="nofollow">{t["m_wrong_link"]}</a></p>') if has_status else ""
             b = (f'<h1>{mod}</h1><p class="mut">{t["m_in"]} '
                  f'<a href="{loc(lang, f"/r/{repo}/")}">{repo}</a> · '
                  f'<a href="https://github.com/OCA/{repo}">{t["m_source"]}</a></p>'
                  f'{meta_facts}'
                  f'<div class="mxr">{mx}</div>'
                  f'<table><tr><th>{t["m_series"]}</th><th>{t["m_status"]}</th>'
-                 f'<th>{t["m_details"]}</th></tr>{"".join(cells)}</table>{extra}{logs}')
+                 f'<th>{t["m_details"]}</th></tr>{"".join(cells)}</table>{extra}{logs}'
+                 f'{wrong}')
             ld = {"@context": "https://schema.org", "@type": "SoftwareSourceCode",
                   "name": mod, "codeRepository": f"https://github.com/OCA/{repo}",
                   "applicationCategory": "Odoo module", "inLanguage": lang,
@@ -1380,6 +1484,15 @@ def build():
         byrepo.setdefault(repo, []).append((mod, v))
     for repo, items in byrepo.items():
         repo_has_status = any((v.get(s) or {}).get("status") for _, v in items for s in series)
+        # Сторінка репозиторію — ДРУГИЙ маршрут, незалежний від sitemap і від
+        # скриптів: вона перелічує всі модулі репозиторію звичайними <a href>.
+        # Тому шлях sitemap → /r/… → /m/… працює навіть для краулера, який не
+        # виконує JS, а таблиця на головній малюється саме скриптом і віконно
+        # (у DOM ~200 рядків із 4 500).
+        if repo_has_status:
+            ra = [ (v.get(s) or {}).get("run_at") for _, v in items for s in series ]
+            ra = [x for x in ra if x]
+            sm.append((f"/r/{repo}/", max(ra) if ra else None))
         for lang in LANGS:
             t = T[lang]
             head = "".join(f"<th>{s}</th>" for s in series[-4:])
@@ -1430,6 +1543,45 @@ def build():
                        + ["" if (v.get(s) or {}).get("installable") is None
                           else int(v[s]["installable"]) for s in series]
                        + [(v.get(s) or {}).get("latest_version") or "" for s in series])
+    # schema.org/Dataset — те, на що дивляться і Google Dataset Search, і
+    # LLM-краулери. Береться з фактичних даних, а не вписується: temporalCoverage
+    # рахується з реальних дат прогонів, тому не старіє й не бреше.
+    #
+    # `distribution` називає ОБИДВА формати, бо це два різні способи вжитку:
+    # CSV відкривають у таблиці й цитують, JSON читає пошук у браузері.
+    def dataset_ld(lang):
+        first = min((r["run_at"] for r in rows if r.get("run_at")), default=None)
+        last = max((r["run_at"] for r in rows if r.get("run_at")), default=None)
+        cov = (f"{first:%Y-%m-%d}/{last:%Y-%m-%d}" if first and last else None)
+        ld = {
+            "@context": "https://schema.org", "@type": "Dataset",
+            "name": TITLE,
+            "description": ("Which OCA modules actually install on which Odoo series, "
+                            "from real `odoo -i` runs in a clean database."
+                            if lang == "en" else
+                            "Які модулі OCA справді встановлюються на які серії Odoo — "
+                            "за результатами реальних прогонів `odoo -i` у чистій базі."),
+            "url": f"{BASE}{loc(lang, '/data/')}",
+            "license": "https://creativecommons.org/licenses/by/4.0/",
+            "isAccessibleForFree": True,
+            "inLanguage": lang,
+            "creator": {"@type": "Person", "name": "Maintainer, " + TITLE,
+                        "email": CONTACT},
+            "keywords": ["Odoo", "OCA", "module compatibility", "migration",
+                         "install verification"],
+            "variableMeasured": ["module", "series", "status", "cause"],
+            "distribution": [
+                {"@type": "DataDownload", "encodingFormat": "text/csv",
+                 "contentUrl": f"{BASE}/data/modules.csv"},
+                {"@type": "DataDownload", "encodingFormat": "application/json",
+                 "contentUrl": f"{BASE}/modules.json"},
+            ],
+            "dateModified": NOW.date().isoformat(),
+        }
+        if cov:
+            ld["temporalCoverage"] = cov
+        return ld
+
     for lang in LANGS:
         t = T[lang]
         out_path(lang, "data").mkdir(parents=True, exist_ok=True)
@@ -1438,7 +1590,7 @@ def build():
             f'<h1>{t["d_h1"]}</h1><p class="lead">{t["d_intro"]}</p><ul>'
             f'<li><a href="/data/modules.csv">{t["d_csv"]}</a></li>'
             f'<li><a href="/modules.json">{t["d_json"]}</a></li></ul>',
-            t["d_intro"]))
+            t["d_intro"], jsonld=dataset_ld(lang)))
 
     # ---------- методологія ----------
     for lang in LANGS:
@@ -1450,37 +1602,22 @@ def build():
                + "</table>")
         out_path(lang, "methodology.html").write_text(page(
             lang, "/methodology.html", f"{t['meth_h1']} — {TITLE}",
-            f"<h1>{t['meth_h1']}</h1>" + METHODOLOGY[lang].format(table=tbl),
+            f"<h1>{t['meth_h1']}</h1>" + METHODOLOGY[lang].format(
+                table=tbl, issues=f"{REPO_URL}/issues", contact=CONTACT),
             "How module compatibility is verified." if lang == "en"
-            else "Як саме перевіряється сумісність модулів Odoo."))
+            else "Як саме перевіряється сумісність модулів Odoo.",
+            jsonld=dataset_ld(lang)))
 
     # ---------- знак ----------
     (SITE / "favicon.svg").write_text(FAVICON)
 
-    # ---------- robots.txt і sitemap.xml (одні, у корені) ----------
+    # ---------- robots.txt ----------
     # Нічого не забороняємо: GPTBot та інші LLM-краулери — основний канал проєкту.
     # Тонкі сторінки тримаються поза індексом посторінковим noindex (див. page()).
+    # sitemap пишеться в кінці build(): у нього входять сторінки модулів,
+    # репозиторіїв і вендорів, а вони генеруються нижче.
     (SITE / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\n\nSitemap: {BASE}/sitemap.xml\n")
-
-    # У sitemap — лише сторінки з реальним вмістом, по одному <url> на мову,
-    # з hreflang-альтернативами. Сторінки під noindex у карту не включаємо.
-    pages = ["/", "/methodology.html", "/data/"]
-    urls = []
-    for pth in pages:
-        alt = "".join(
-            f'<xhtml:link rel="alternate" hreflang="{lg}" href="{BASE}{loc(lg, pth)}"/>'
-            for lg in LANGS
-        ) + (f'<xhtml:link rel="alternate" hreflang="x-default" '
-             f'href="{BASE}{loc(DEFAULT_LANG, pth)}"/>')
-        for lg in LANGS:
-            urls.append(f"<url><loc>{BASE}{loc(lg, pth)}</loc>{alt}"
-                        f"<lastmod>{NOW:%Y-%m-%d}</lastmod></url>")
-    (SITE / "sitemap.xml").write_text(
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
-        ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
-        + "\n".join(urls) + "\n</urlset>\n")
 
     # ---------- Atom-фіди ----------
     # Фід по вендору — головний з трьох: він потрапляє в чужий робочий процес
@@ -1515,6 +1652,10 @@ def build():
     for ven, sl in vendor_slugs.items():
         items = sorted((k, v) for k, v in mods.items()
                        if ven in (meta_of(v, series).get("vendors") or []))
+        if items:
+            va = [ (v.get(s) or {}).get("run_at") for _, v in items for s in series ]
+            va = [x for x in va if x]
+            sm.append((f"/v/{sl}/", max(va) if va else None))
         for lang in LANGS:
             tt = T[lang]
             head_v = "".join(f"<th>{s}</th>" for s in series[-4:])
@@ -1557,6 +1698,115 @@ Last updated: {NOW.isoformat()}
 Modules indexed: {len(mods)}. Tested: {tested}. Series: {', '.join(series)}.
 Independent project. Not affiliated with Odoo S.A. or the Odoo Community Association.
 """)
+
+    # ---------- прибирання сторінок, яких більше немає в даних ----------
+    #
+    # export ЛИШЕ писав файли й ніколи не видаляв, тому сайт накопичував
+    # сторінки модулів і репозиторіїв, вилучених з індексу. 21.08.2026 таких
+    # знайшлося 16 — і серед них рівно ті три фантоми, які CLAUDE.md забороняє
+    # публікувати (`server-auth/readme`, `stock-logistics-transport/lessons`,
+    # `delivery-carrier/delivery_carrier_label_gls`), плюс два репозиторії,
+    # скошені жнецем із OCA (`interface-github`, `infrastructure-dns`).
+    # Каддi віддавав їх із кодом 200. Виявились вони випадково: у них лишився
+    # старий `content="noindex"` без `follow`, тобто мовчали б і далі.
+    #
+    # Це та сама асиметрія, що й у harvest: додавати без видалення означає, що
+    # помилка живе назавжди. Тому очікуваний набір рахуємо З ДАНИХ, а не з того,
+    # що писали цього разу.
+    #
+    # Запобіжник як у жнеця (ops/inbox/0004 R1): якщо під видалення підпадає
+    # більше 2% сторінок або більше 100, НІЧОГО не видаляємо і кричимо. Порожній
+    # чи поламаний зріз не має права знести опублікований сайт.
+    keep = {
+        "m": {f"{r}/{m}" for (r, m) in mods},
+        "r": set(byrepo),
+        "v": set(vendor_slugs.values()),
+    }
+    stale, total_pages = [], 0
+    for lang in LANGS:
+        for kind, names in keep.items():
+            root = out_path(lang, kind)
+            if not root.exists():
+                continue
+            for idx in root.rglob("index.html"):
+                total_pages += 1
+                rel = idx.parent.relative_to(root).as_posix()
+                if rel not in names:
+                    stale.append(idx.parent)
+    cap = max(100, int(total_pages * 0.02))
+    if not stale:
+        print("прибирання: зайвих сторінок немає")
+    elif len(stale) > cap:
+        print(f"УВАГА: під видалення підпадає {len(stale)} сторінок із {total_pages} "
+              f"(межа {cap}) — НЕ видаляю. Схоже на поламаний зріз, не на прибирання.")
+        for d in stale[:10]:
+            print(f"   {d}")
+    else:
+        for d in stale:
+            shutil.rmtree(d, ignore_errors=True)
+        print(f"прибрано зайвих сторінок: {len(stale)} із {total_pages} "
+              f"({', '.join(str(d.relative_to(SITE)) for d in stale[:6])}"
+              f"{' …' if len(stale) > 6 else ''})")
+
+    # ---------- sitemap: індекс + файли по типах сторінок ----------
+    #
+    # Досі в карті було 6 записів: головна, методологія, датасет — по дві мови.
+    # Сторінок модулів у ній не було НІ ОДНОЇ, і це найдорожча діра з можливих:
+    # питання, з яким приходить партнер, звучить «does module X work on Odoo 19»,
+    # і сторінка модуля — єдина в світі відповідь на нього. Дійти до неї краулер
+    # не міг: таблиця на головній малюється скриптом і віконно (у DOM ~200 рядків
+    # із 4 500), тобто посилань на решту в розмітці просто немає.
+    #
+    # Один <url> на мову з повним набором hreflang-альтернатив у кожному: інакше
+    # англійська й українська версії конкурують між собою як дублікати.
+    #
+    # Ліміт стандарту — 50 000 URL і 50 МБ на файл. Ріжемо по 40 000 із запасом:
+    # у вересні додається пʼята серія, і перевищити ліміт саме тоді, коли карта
+    # найпотрібніша, було б у стилі решти дефектів цього тижня.
+    SM_CHUNK = 40_000
+
+    def _urlset(entries):
+        out = []
+        for pth, lastmod in entries:
+            alt = "".join(
+                f'<xhtml:link rel="alternate" hreflang="{lg}" href="{BASE}{loc(lg, pth)}"/>'
+                for lg in LANGS
+            ) + (f'<xhtml:link rel="alternate" hreflang="x-default" '
+                 f'href="{BASE}{loc(DEFAULT_LANG, pth)}"/>')
+            lm = f"<lastmod>{lastmod:%Y-%m-%d}</lastmod>" if lastmod else ""
+            for lg in LANGS:
+                out.append(f"<url><loc>{BASE}{loc(lg, pth)}</loc>{alt}{lm}</url>")
+        return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"'
+                ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
+                + "\n".join(out) + "\n</urlset>\n")
+
+    static_pages = [(pth, NOW.date()) for pth in ("/", "/methodology.html", "/data/")]
+    groups = {
+        "pages": static_pages,
+        "modules": [e for e in sm if e[0].startswith("/m/")],
+        "repos": [e for e in sm if e[0].startswith("/r/")],
+        "vendors": [e for e in sm if e[0].startswith("/v/")],
+    }
+    children = []
+    for name, entries in groups.items():
+        if not entries:
+            continue
+        chunks = [entries[i:i + SM_CHUNK] for i in range(0, len(entries), SM_CHUNK)]
+        for n, chunk in enumerate(chunks, 1):
+            fn = f"sitemap-{name}.xml" if len(chunks) == 1 else f"sitemap-{name}-{n}.xml"
+            (SITE / fn).write_text(_urlset(chunk))
+            newest = max((lm for _, lm in chunk if lm), default=NOW.date())
+            children.append((fn, newest, len(chunk) * len(LANGS)))
+    (SITE / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(f"<sitemap><loc>{BASE}/{fn}</loc>"
+                     f"<lastmod>{lm:%Y-%m-%d}</lastmod></sitemap>"
+                     for fn, lm, _ in children)
+        + "\n</sitemapindex>\n")
+    print("sitemap: " + " · ".join(f"{fn} — {n} URL" for fn, _, n in children)
+          + f" · разом {sum(n for _, _, n in children)}")
 
     check_bars(conn, bd_all)
     files = check_css_vars()
