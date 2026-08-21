@@ -53,6 +53,56 @@ STATUS_CLS = {
     None: ("—", "muted"),
 }
 
+# Смуга серії. Сегменти — це РЕЗУЛЬТАТИ прогонів (`ok`…`timeout`) плюс стани,
+# для яких прогону не було. Раніше цикл ішов лише по ключах станів, а
+# `breakdown()` станами і віддає — тому єдиним сегментом, який узагалі збігався,
+# лишався `not_installable`, і смуга показувала виключену меншість замість
+# результату: у 17.0 «1915 verified» під смугою з 15 невстановлюваних на всю
+# ширину (ops/inbox/0021 B2). Джерело тепер одне — `by_status` + стани.
+BAR_ORDER = ["ok", "warn", "dep", "env", "fail", "timeout",
+             "pending", "not_installable", "not_verifiable", "out_of_scope",
+             "absent"]
+
+# Клас і змінна CSS — різні простори імен, і саме на цьому смуги втратили колір:
+# `.muted` існує як КЛАС (`color:var(--m)`), але `var(--muted)` не існує ніде,
+# тому `background` не застосовувався взагалі (ops/inbox/0021 B1). Тут — лише
+# імена змінних із `:root`. Перевіряє це `check_css_vars()`, а не пильність.
+BAR_VAR = {"ok": "good", "warn": "warning", "dep": "serious", "env": "m",
+           # timeout НЕ фарбуємо як fail: одиничний таймаут — властивість
+           # стенду, не вердикт модулю (ops/inbox/0019 E), а два сегменти
+           # одного кольору поруч читаються як один.
+           "fail": "critical", "timeout": "stall",
+           "pending": "l", "not_installable": "ax", "not_verifiable": "ax",
+           "out_of_scope": "notported", "absent": "notported"}
+
+
+def bar_parts(b, series=""):
+    """Сегменти смуги однієї серії: [(ключ, n, змінна CSS)].
+
+    Сума сегментів мусить дорівнювати `total` серії. Не сходиться — `raise`, а
+    не рендер: тиха втрата сегментів уже проходила і синтаксис, і генерацію, і
+    годинний таймер (ops/inbox/0021 B3). Це третій випадок того самого класу за
+    тиждень, тому тут виняток, а не попередження.
+    """
+    counts = dict(b.get("by_status") or {})
+    for st in ("pending", "not_installable", "not_verifiable",
+               "out_of_scope", "absent"):
+        if b.get(st):
+            counts[st] = b[st]
+    unknown = sorted(set(counts) - set(BAR_ORDER))
+    if unknown:
+        raise RuntimeError(
+            f"смуга {series}: невідомі ключі {unknown} — "
+            f"додати в BAR_ORDER і BAR_VAR, інакше сегмент зникне молча")
+    parts = [(k, counts[k], BAR_VAR[k]) for k in BAR_ORDER if counts.get(k)]
+    got, want = sum(n for _, n, _ in parts), b.get("total", 0)
+    if got != want:
+        raise RuntimeError(
+            f"смуга {series}: сегментів {got}, модулів у серії {want}; "
+            f"розклад {b}")
+    return parts
+
+
 T = {
     "en": {
         "lang_name": "EN", "other_name": "УК",
@@ -311,6 +361,7 @@ FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
 CSS = """
 :root{--s:#fcfcfb;--p:#f9f9f7;--i:#0b0b0b;--i2:#52514e;--m:#898781;--l:#e1e0d9;--ax:#c3c2b7;
 --good:#0ca30c;--warning:#fab219;--serious:#ec835a;--critical:#d03b3b;--a:#2a78d6;
+--stall:#7d6bb0;
 --ported:#2a78d6;--notported:#c3c2b7}
 @media(prefers-color-scheme:dark){:root{--s:#1a1a19;--p:#0d0d0d;--i:#fff;--i2:#c3c2b7;--m:#898781;
 --l:#2c2c2a;--ax:#383835;--a:#3987e5;--ported:#3987e5;--notported:#4a4a46}}
@@ -985,21 +1036,15 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, b
     # отримує ЯВНУ смугу «не охоплено», а не порожнє місце: відсутність даних
     # це теж стан, і показати його чесніше, ніж приховати (ops/inbox/0017 C).
     # Кожна смуга підписана своїм знаменником у тому ж рядку.
-    ORDER = ["ok", "warn", "dep", "env", "fail", "timeout",
-             "not_installable", "pending", "out_of_scope"]
     bars = []
     for s in series:
         b = bd_all.get(s, {})
         total = b.get("total", 0) or 1
         segs, parts = [], []
-        for key in ORDER:
-            n = b.get(key, 0)
-            if not n:
-                continue
-            cls = STATUS_CLS.get(key, STATUS_CLS[None])[1]
-            segs.append(f'<div style="flex:{n};background:var(--{cls})" '
+        for key, n, var in bar_parts(b, s):
+            segs.append(f'<div style="flex:{n};background:var(--{var})" '
                         f'title="{st_label(key, lang)}: {n}">{n if n / total > .04 else ""}</div>')
-            parts.append(f'<span><i class="sw" style="background:var(--{cls})"></i>'
+            parts.append(f'<span><i class="sw" style="background:var(--{var})"></i>'
                          f'{STATUS_CLS.get(key, STATUS_CLS[None])[0]} '
                          f'{st_label(key, lang)} — {n}</span>')
         run = b.get("runnable", 0)
@@ -1072,6 +1117,59 @@ def home(lang, series, mods, present, ported, gap, counts, tested, repos_next, b
 </script>"""
     return page(lang, "/", f"{TITLE} — {t['h1']}", body,
                 t["sub"][:180])
+
+
+def check_css_vars():
+    """Кожна `var(--x)` у згенерованому має бути визначена в `:root`.
+
+    Смуги на головній були безбарвні тиждень, бо `var(--muted)` не існує:
+    ім'я класу підставлялося туди, де потрібне ім'я змінної. Браузер такий
+    промах не повідомляє, він просто не малює (ops/inbox/0021 B1). Перевірка
+    коштує один прохід по вихідних файлах, тому робиться завжди, а не за
+    прапорцем.
+    """
+    defined = set(re.findall(r"--([\w-]+)\s*:", CSS))
+    bad, files = {}, 0
+    for f in SITE.rglob("*.html"):
+        files += 1
+        for name in set(re.findall(r"var\(--([\w-]+)\)", f.read_text())):
+            if name not in defined:
+                bad.setdefault(name, str(f.relative_to(SITE)))
+    if bad:
+        raise RuntimeError(
+            "невизначені змінні CSS: "
+            + ", ".join(f"--{k} (напр. {v})" for k, v in sorted(bad.items()))
+            + f"; у :root є {sorted(defined)}")
+    return files
+
+
+def check_bars(conn, bd_all):
+    """У серії є прогони — у смузі мусять бути сегменти статусів.
+
+    Незалежна перевірка: сторінка рахується з `mods`, а це — з БД. Рівність тут
+    вимагати не можна, і це не недогляд: модуль з `installable=false` має
+    прогін, але в смузі стоїть як `not_installable` (indexer/state.py, правило
+    3), тому статуси з БД законно можуть не мати пари на сторінці. Незаконне —
+    коли прогони є, а сегментів статусів нуль: рівно та регресія з
+    ops/inbox/0021 B2.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT series, status, count(*) c FROM latest_runs GROUP BY 1,2")
+    db = {}
+    for r in cur.fetchall():
+        db.setdefault(r["series"], {})[r["status"]] = r["c"]
+    for s in sorted(bd_all):
+        page = set(bd_all[s].get("by_status") or {})
+        have = set(db.get(s) or {})
+        if have and not page:
+            raise RuntimeError(
+                f"смуга {s}: у БД {len(have)} різних статусів "
+                f"({sorted(have)}), у смузі — жодного сегмента статусу")
+        miss = sorted(have - page)
+        if miss:
+            print(f"  увага: у смузі {s} немає статусів {miss} — "
+                  f"перевір, чи всі вони з'їдені not_installable",
+                  file=sys.stderr)
 
 
 def build():
@@ -1432,8 +1530,12 @@ Modules indexed: {len(mods)}. Tested: {tested}. Series: {', '.join(series)}.
 Independent project. Not affiliated with Odoo S.A. or the Odoo Community Association.
 """)
 
+    check_bars(conn, bd_all)
+    files = check_css_vars()
     print(f"згенеровано: {len(mods)} модулів × {len(LANGS)} мови, "
           f"{len(byrepo)} репозиторіїв → {SITE}")
+    print(f"перевірено: сегменти смуг сходяться з total, "
+          f"змінні CSS визначені ({files} файлів)")
     conn.close()
 
 

@@ -81,11 +81,22 @@ def denominator(rows):
 
 
 def breakdown(rows):
-    """Повний розклад для підпису під відсотком: {state: n} плюс total."""
-    out = {}
+    """Повний розклад для підпису під відсотком: {state: n} плюс total.
+
+    `by_status` — розклад САМЕ прогонів: `verified` розкладений на `ok`, `warn`,
+    `dep`, `env`, `fail`, `timeout`. Без нього єдиним джерелом для смуг на
+    головній лишалися ключі станів, а результат прогону в них не видно взагалі
+    — і смуга показувала виключену меншість замість результату
+    (ops/inbox/0021 B2). Сума `by_status` завжди дорівнює `verified`: статус
+    непорожній рівно у verified-рядків.
+    """
+    out, by = {}, {}
     for r in rows:
-        st = derive_state(r)[0]
+        st, status = derive_state(r)
         out[st] = out.get(st, 0) + 1
+        if status:
+            by[status] = by.get(status, 0) + 1
     out["total"] = len(rows)
     out["runnable"] = sum(out.get(s, 0) for s in RUNNABLE)
+    out["by_status"] = by
     return out
