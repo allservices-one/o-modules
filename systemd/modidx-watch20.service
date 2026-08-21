@@ -1,0 +1,16 @@
+[Unit]
+Description=Module Health Index — вартовий гілки наступної серії Odoo
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/modidx
+Environment=ROOT=/srv/modidx
+Environment=WATCH_SERIES=20.0
+# Повний обхід OCA — не частіше разу на годину. До появи гілки платформи він
+# не робиться взагалі: 232 репозиторії кожні 15 хвилин це трафік без інформації.
+Environment=WATCH_SWEEP_MIN=60
+ExecStart=/usr/bin/python3 /srv/modidx/indexer/watch20.py
+MemoryMax=256M
+StandardOutput=append:/srv/modidx/var/logs/watch20.log
+StandardError=append:/srv/modidx/var/logs/watch20.log

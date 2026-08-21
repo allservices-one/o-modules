@@ -667,6 +667,33 @@ def status_json(conn):
             e["latest_runs_by_image"] = used[s]
         images[s] = e
 
+    # Вартовий наступної серії (indexer/watch20.py). Тут він потрібен тому,
+    # що сесія без SSH інакше не дізнається ні що вартовий живий, ні що T-0
+    # настав: журнал systemd вона не бачить, а це подія, після якої в проєкті
+    # міняється все (ops/inbox/0022).
+    cur.execute("SELECT key, at, note FROM watch_state")
+    ws = {r["key"]: r for r in cur.fetchall()}
+    cur.execute("SELECT kind, repo, at FROM eco_events WHERE series = %s",
+                (NEXT_SERIES,))
+    ev = {(r["kind"], r["repo"]): r["at"] for r in cur.fetchall()}
+
+    def _at(x):
+        return x["at"].isoformat() if isinstance(x, dict) else (x.isoformat() if x else None)
+
+    sweep = ws.get(f"oca_sweep_{NEXT_SERIES}")
+    watch = {
+        "series": NEXT_SERIES,
+        "keynote": V20_KEYNOTE.isoformat(),
+        "last_check": _at(ws.get(f"check_{NEXT_SERIES}")),
+        # Дата виявлення, а не дата релізу: саме вона згодом і буде доказом.
+        "platform_branch_seen": _at(ev.get(("branch_first", "odoo/odoo"))),
+        "dockerhub_tag_seen": _at(ev.get(("dockerhub_tag", "library/odoo"))),
+        "oca_last_sweep": _at(sweep),
+        "oca_note": sweep["note"] if sweep else None,
+        "oca_repos_with_branch": sum(
+            1 for (k, r) in ev if k == "branch_first" and r.startswith("OCA/")),
+    }
+
     du = shutil.disk_usage("/")
     mem_available_mb = None
     try:
@@ -697,6 +724,7 @@ def status_json(conn):
         "states": states,
         "queue": {k: queue.get(k, 0) for k in ("queued", "running", "error")},
         "images": images,
+        "next_series": watch,
         "disk_free_gb": round(du.free / 1024**3, 1),
         "mem_available_mb": mem_available_mb,
     }

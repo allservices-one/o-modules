@@ -202,6 +202,15 @@ CREATE TABLE IF NOT EXISTS feed_cursor (
 );
 INSERT INTO feed_cursor (one) VALUES (true) ON CONFLICT DO NOTHING;
 
+-- Стан вартового наступної серії (indexer/watch20.py): коли останній тик, коли
+-- останній повний обхід OCA. Потрібен, щоб обхід 232 репозиторіїв не йшов
+-- кожні 15 хвилин, і щоб `/status.json` показував, що вартовий живий.
+CREATE TABLE IF NOT EXISTS watch_state (
+  key  text PRIMARY KEY,
+  at   timestamptz NOT NULL DEFAULT now(),
+  note text
+);
+
 -- Події екосистеми: поява й зникнення репозиторію, перша гілка серії.
 -- Інша аудиторія, ніж зміни стану модуля, тому окрема таблиця й окремий фід.
 CREATE TABLE IF NOT EXISTS eco_events (

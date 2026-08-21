@@ -1,0 +1,11 @@
+[Unit]
+Description=Перевірка гілки 20.0 кожні 15 хвилин
+
+[Timer]
+OnCalendar=*:0/15
+# Persistent НЕ ставимо: пропущений тик наздоганяти нічого не дає — питання
+# «чи є гілка» завжди про зараз, а не про минулу чверть години.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
