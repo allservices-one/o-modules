@@ -6,7 +6,12 @@ After=docker.service
 Type=oneshot
 WorkingDirectory=/srv/modidx
 Environment=ROOT=/srv/modidx
-Environment=HARVEST_SERIES=16.0 17.0 18.0 19.0 20.0
+# ЛАПКИ ОБОВʼЯЗКОВІ. systemd розбиває Environment= по пробілах, тому без них
+# рядок читався як HARVEST_SERIES=16.0 плюс чотири «Invalid environment
+# assignment, ignoring: 17.0 …», і нічний зріз ПИСАВ ЛИШЕ 16.0. Файл при цьому
+# виглядав правильним. Спіймано 21.08.2026 по series_snapshots: за 20 і 21.08
+# у таблиці є рядок тільки для 16.0, решта серій — з ручних запусків 19.08.
+Environment="HARVEST_SERIES=16.0 17.0 18.0 19.0 20.0"
 ExecStart=/usr/bin/python3 /srv/modidx/indexer/harvest.py
 # Порядок важливий: спершу чекаути, потім черга. Було навпаки — enqueue
 # наповнював чергу модулями, чиїх тек на диску ще немає, і перші задачі

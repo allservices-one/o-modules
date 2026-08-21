@@ -63,14 +63,63 @@ docker exec -e PGPASSWORD modidx-pg pg_dump -U odoo -d modidx \
   | gzip > "var/backups/modidx-$(date +%F).sql.gz"
 ls -1t var/backups/*.sql.gz | tail -n +8 | xargs -r rm --
 
-# 5. Offsite і водночас публічний датасет: пуш CSV у git-репозиторій (безкоштовно)
-if [ -d var/dataset/.git ]; then
-  cp var/site/data/modules.csv var/dataset/ 2>/dev/null || true
-  cp var/oca_modules.csv var/dataset/ 2>/dev/null || true
-  (cd var/dataset && git add -A && \
-   git -c user.name="modidx" -c user.email="noreply@localhost" \
-     commit -qm "dataset $(date -I)" 2>/dev/null && git push -q origin HEAD 2>/dev/null) \
-   && echo "датасет запушено"
+# 5. Датасет і offsite-копія: коміт CSV у `data/` ЦЬОГО Ж репозиторію.
+#
+# Чому сюди, а не в окремий репозиторій (як планував STEPS.md 23): окремий
+# вимагає нового deploy key, тобто дій власника і затримки, а offsite-копії не
+# існує ВЗАГАЛІ — 21.08.2026 виявилось, що maint.timer не був увімкнений, тому
+# ні pg_dump, ні пуш не робились ні разу з початку проєкту. Розділити історію
+# під «чистий» репозиторій для цитування можна після 24.09: це подача, а не бекап.
+# Старий код тут пушив у var/dataset/, якого на диску ніколи не було, — умова
+# `if [ -d var/dataset/.git ]` робила крок тихим no-op навіть при живому таймері.
+#
+# series_snapshots вигружається ЦІЛКОМ, а не поточним зрізом. Це єдина
+# невідтворювана частина активу: код перепише будь-хто, прогони детерміновані й
+# повторюються, а рядок «станом на 19.08.2026 на 19.0 було 1 192 модулі» заднім
+# числом не добудовується ні з чого.
+mkdir -p data
+# Пишемо через .new: якщо psql упаде, `> data/…csv` встиг би обнулити файл, і
+# бекап перетворився б на видалення. Порожній вивід теж не приймаємо.
+if docker exec -i -e PGPASSWORD modidx-pg psql -U odoo -d modidx -v ON_ERROR_STOP=1 -q -c \
+     "COPY (SELECT taken_at, series, repos, modules, installs_ok, method
+              FROM series_snapshots ORDER BY taken_at, series)
+        TO STDOUT WITH (FORMAT csv, HEADER)" > var/series_snapshots.csv.new \
+   && [ -s var/series_snapshots.csv.new ]; then
+  mv var/series_snapshots.csv.new data/series_snapshots.csv
+  echo "series_snapshots: $(( $(wc -l < data/series_snapshots.csv) - 1 )) рядків"
+else
+  rm -f var/series_snapshots.csv.new
+  echo "УВАГА: не вдалося вигрузити series_snapshots — датасет НЕ оновлено"
+fi
+[ -s var/site/data/modules.csv ] && cp var/site/data/modules.csv data/modules.csv
+
+# Комітимо ТІЛЬКИ data/ і саме через pathspec: у робочому дереві сервера цілком
+# може лежати незакінчена правка сесії, і нічне обслуговування не має права
+# затягнути її в публічний репозиторій. Секретів у цих CSV немає (лише
+# repo/module/статуси), тому ops-check.sh тут не потрібен.
+if [ -n "$(git status --porcelain -- data)" ]; then
+  # `git add` перед комітом з pathspec обовʼязковий: `commit -- data` бере вміст
+  # робочого дерева лише для того, що git уже відслідковує, і НОВИЙ файл
+  # (перший series_snapshots.csv) без add просто не потрапив би в коміт.
+  git add -- data
+  if git -c user.name="modidx" -c user.email="noreply@localhost" \
+       commit -qm "dataset $(date -I): series_snapshots + modules.csv" -- data; then
+    if git push -q origin HEAD 2>&1; then
+      echo "датасет запушено: $(git rev-parse --short HEAD)"
+    else
+      # Найімовірніше remote попереду (власник або сесія запушили раніше).
+      # rebase робимо тільки якщо решта дерева чиста — інакше зіпсуємо роботу сесії.
+      if [ -z "$(git status --porcelain)" ] && git pull -q --rebase origin main && git push -q origin HEAD; then
+        echo "датасет запушено після rebase: $(git rev-parse --short HEAD)"
+      else
+        echo "УВАГА: коміт датасету є, push НЕ пройшов — запушити руками"
+      fi
+    fi
+  else
+    echo "УВАГА: коміт датасету не зробився"
+  fi
+else
+  echo "датасет без змін"
 fi
 
 # 6. Звіт відвідувань зі логів Caddy (нуль постійної памʼяті)

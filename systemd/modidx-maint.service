@@ -5,6 +5,11 @@ Description=Module Health Index — нічне обслуговування (б�
 Type=oneshot
 WorkingDirectory=/srv/modidx
 Environment=ROOT=/srv/modidx
+# HOME обовʼязковий. systemd НЕ виставляє $HOME сервісам без User=, а крок
+# «датасет у git» пушить по SSH через аліас github-modidx із /root/.ssh/config.
+# Без HOME ssh не бачить ні config, ні known_hosts, і нічний пуш тихо падає —
+# тобто offsite-копії знову немає, при живому таймері й зеленому юніті.
+Environment=HOME=/root
 ExecStart=/bin/bash /srv/modidx/bin/maint.sh
 MemoryMax=500M
 StandardOutput=append:/srv/modidx/var/logs/maint.log

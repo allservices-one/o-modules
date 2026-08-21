@@ -7,7 +7,10 @@ Requires=docker.service
 Type=simple
 WorkingDirectory=/srv/modidx
 Environment=ROOT=/srv/modidx
-Environment=SERIES=17.0 18.0 19.0
+# Лапки — з тієї ж причини, що й у modidx-harvest.service: без них systemd
+# бачив SERIES=17.0. Тут це не проявилось лише тому, що claim() у runner.py
+# бере серію з голови черги й змінну не читає; лишати пастку однаково не варто.
+Environment="SERIES=17.0 18.0 19.0"
 # BATCH=8 для першого масового проходу, BATCH=1 для точних перевірок
 Environment=BATCH=8
 Environment=RUN_MEM=2g
