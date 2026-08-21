@@ -121,6 +121,12 @@ T = {
     "en": {
         "lang_name": "EN", "other_name": "УК",
         "nav_methodology": "methodology", "nav_dataset": "dataset",
+        "nav_repos": "repositories",
+        "ix_repos_h": "All repositories", "ix_vendors_h": "All vendors",
+        "ix_repos_intro": "Every OCA repository in the index, with how many of its "
+                          "modules have an install verdict.",
+        "ix_vendors_intro": "Every vendor named in a module manifest.",
+        "ix_verified": "with a verdict",
         "h1": "Which OCA modules actually run on which Odoo version",
         "sub": ("We install every public OCA module into a clean database of every Odoo "
                 "series and publish what happened — the install log, with a date. "
@@ -209,6 +215,12 @@ T = {
     "uk": {
         "lang_name": "УК", "other_name": "EN",
         "nav_methodology": "методологія", "nav_dataset": "датасет",
+        "nav_repos": "репозиторії",
+        "ix_repos_h": "Усі репозиторії", "ix_vendors_h": "Усі вендори",
+        "ix_repos_intro": "Кожен репозиторій OCA в індексі та скільки його модулів "
+                          "мають вердикт прогону.",
+        "ix_vendors_intro": "Кожен вендор, названий у манифесті модуля.",
+        "ix_verified": "з вердиктом",
         "h1": "Які модулі OCA справді працюють на якій версії Odoo",
         "sub": ("Ми встановлюємо кожен публічний модуль OCA у чисту базу кожної серії "
                 "Odoo і публікуємо, що сталося — лог install і дату. Не заяви вендорів."),
@@ -576,6 +588,7 @@ def page(lang, url, title, body, desc="", jsonld=None, noindex=False, feed="/fee
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>{CSS}</style>{ld}</head><body><div class="w">
 <nav><a class="brand" href="{loc(lang, '/')}">{MARK}{TITLE}</a>
+<a href="{loc(lang, '/r/')}">{t['nav_repos']}</a>
 <a href="{loc(lang, '/methodology.html')}">{t['nav_methodology']}</a>
 <a href="{loc(lang, '/data/')}">{t['nav_dataset']}</a>
 <span class="sp"></span><a href="{loc(other, url)}" hreflang="{other}">{T[other]['lang_name']}</a></nav>
@@ -1699,6 +1712,45 @@ Modules indexed: {len(mods)}. Tested: {tested}. Series: {', '.join(series)}.
 Independent project. Not affiliated with Odoo S.A. or the Odoo Community Association.
 """)
 
+    # ---------- покажчики /r/ і /v/: маршрут, незалежний від sitemap ----------
+    #
+    # До 21.08.2026 `/r/`, `/v/` і `/m/` віддавали 404. Наслідок: єдиний спосіб
+    # дійти до сторінки модуля — sitemap, бо на головній таблиця малюється
+    # скриптом і в сирому HTML посилань на `/m/` РІВНО НУЛЬ (перевірено curl:
+    # `href="/m/` — 0, `href="/r/` — 0, `href="/v/` — 0). А до сторінки
+    # репозиторію можна було дійти лише зі сторінки модуля, тобто маршрут був
+    # замкнений сам на себе.
+    #
+    # Тепер ланцюг статичний і повний: головна → /r/ → /r/<репо>/ → /m/<репо>/<мод>/.
+    # Жодного скрипта, жодної залежності від того, чи прочитали карту. Карта
+    # лишається швидшим шляхом, але вже не єдиним.
+    #
+    # Заодно це сторінки для людини без JS, а таких серед краулерів більшість.
+    for lang in LANGS:
+        t_ = T[lang]
+        rows_r = "".join(
+            f'<tr><td><a href="{loc(lang, f"/r/{repo}/")}">{repo}</a></td>'
+            f'<td>{len(items)}</td>'
+            f'<td>{sum(1 for _, v in items if any((v.get(s) or {}).get("status") for s in series))}</td></tr>'
+            for repo, items in sorted(byrepo.items()))
+        out_path(lang, "r").mkdir(parents=True, exist_ok=True)
+        out_path(lang, "r/index.html").write_text(page(
+            lang, "/r/", f"{t_['ix_repos_h']} — {TITLE}",
+            f'<h1>{t_["ix_repos_h"]}</h1><p class="lead">{t_["ix_repos_intro"]}</p>'
+            f'<table><tr><th>{t_["col_repo"]}</th>'
+            f'<th>{t_["modules_h"]}</th><th>{t_["ix_verified"]}</th></tr>{rows_r}</table>',
+            t_["ix_repos_intro"]))
+
+        rows_v = "".join(
+            f'<tr><td><a href="{loc(lang, f"/v/{sl}/")}">{html.escape(ven)}</a></td></tr>'
+            for ven, sl in sorted(vendor_slugs.items()))
+        out_path(lang, "v").mkdir(parents=True, exist_ok=True)
+        out_path(lang, "v/index.html").write_text(page(
+            lang, "/v/", f"{t_['ix_vendors_h']} — {TITLE}",
+            f'<h1>{t_["ix_vendors_h"]}</h1><p class="lead">{t_["ix_vendors_intro"]}</p>'
+            f'<table><tr><th>{t_["col_vendor"]}</th></tr>{rows_v}</table>',
+            t_["ix_vendors_intro"]))
+
     # ---------- прибирання сторінок, яких більше немає в даних ----------
     #
     # export ЛИШЕ писав файли й ніколи не видаляв, тому сайт накопичував
@@ -1731,8 +1783,12 @@ Independent project. Not affiliated with Odoo S.A. or the Odoo Community Associa
             for idx in root.rglob("index.html"):
                 total_pages += 1
                 rel = idx.parent.relative_to(root).as_posix()
-                if rel not in names:
-                    stale.append(idx.parent)
+                # "." — це сам /r/index.html, /v/index.html: покажчики, а не
+                # сторінка сутності. Без цього винятку прибирання зносило б їх
+                # на кожному запуску, бо в наборі імен їх немає за визначенням.
+                if rel == "." or rel in names:
+                    continue
+                stale.append(idx.parent)
     cap = max(100, int(total_pages * 0.02))
     if not stale:
         print("прибирання: зайвих сторінок немає")
@@ -1781,7 +1837,10 @@ Independent project. Not affiliated with Odoo S.A. or the Odoo Community Associa
                 ' xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
                 + "\n".join(out) + "\n</urlset>\n")
 
-    static_pages = [(pth, NOW.date()) for pth in ("/", "/methodology.html", "/data/")]
+    # `/r/` і `/v/` — покажчики, а не сутності, тому їхній lastmod = дата
+    # генерації: вони змінюються щоразу, коли змінюється склад індексу.
+    static_pages = [(pth, NOW.date())
+                    for pth in ("/", "/methodology.html", "/data/", "/r/", "/v/")]
     groups = {
         "pages": static_pages,
         "modules": [e for e in sm if e[0].startswith("/m/")],
